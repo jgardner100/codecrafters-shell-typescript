@@ -6,7 +6,7 @@ import {
   openSync,
   writeFileSync,
 } from "fs";
-import path from "path";
+import * as path from "path";
 import { spawnSync } from "child_process";
 
 const builtins = new Set(["echo", "exit", "type", "pwd", "cd"]);
@@ -24,7 +24,7 @@ type RedirectTarget = {
 type ParsedCommand = {
   tokens: ShellToken[];
   stdoutTarget: RedirectTarget | null;
-  stderrFile: string | null;
+  stderrTarget: RedirectTarget | null;
 };
 
 function parseCommandLine(input: string): ShellToken[] {
@@ -114,7 +114,7 @@ function extractRedirections(tokens: ShellToken[]): ParsedCommand {
   const commandTokens: ShellToken[] = [];
 
   let stdoutTarget: RedirectTarget | null = null;
-  let stderrFile: string | null = null;
+  let stderrTarget: RedirectTarget | null = null;
 
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
@@ -137,14 +137,34 @@ function extractRedirections(tokens: ShellToken[]): ParsedCommand {
       continue;
     }
 
+    if (!token.quoted && token.value === "2>>") {
+      stderrTarget = {
+        file: tokens[i + 1]?.value ?? "",
+        append: true,
+      };
+      i++;
+      continue;
+    }
+
     if (!token.quoted && token.value === "2>") {
-      stderrFile = tokens[i + 1]?.value ?? "";
+      stderrTarget = {
+        file: tokens[i + 1]?.value ?? "",
+        append: false,
+      };
       i++;
       continue;
     }
 
     if (!token.quoted && token.value.startsWith("1>>") && token.value.length > 3) {
       stdoutTarget = {
+        file: token.value.slice(3),
+        append: true,
+      };
+      continue;
+    }
+
+    if (!token.quoted && token.value.startsWith("2>>") && token.value.length > 3) {
+      stderrTarget = {
         file: token.value.slice(3),
         append: true,
       };
@@ -168,7 +188,10 @@ function extractRedirections(tokens: ShellToken[]): ParsedCommand {
     }
 
     if (!token.quoted && token.value.startsWith("2>") && token.value.length > 2) {
-      stderrFile = token.value.slice(2);
+      stderrTarget = {
+        file: token.value.slice(2),
+        append: false,
+      };
       continue;
     }
 
@@ -186,42 +209,32 @@ function extractRedirections(tokens: ShellToken[]): ParsedCommand {
   return {
     tokens: commandTokens,
     stdoutTarget,
-    stderrFile,
+    stderrTarget,
   };
 }
 
-function writeStdout(text: string, stdoutTarget: RedirectTarget | null): void {
-  if (stdoutTarget !== null) {
-    writeFileSync(stdoutTarget.file, text, {
-      flag: stdoutTarget.append ? "a" : "w",
+function writeToRedirectOrStream(
+  text: string,
+  target: RedirectTarget | null,
+  stream: NodeJS.WriteStream,
+): void {
+  if (target !== null) {
+    writeFileSync(target.file, text, {
+      flag: target.append ? "a" : "w",
     });
   } else {
-    process.stdout.write(text);
+    stream.write(text);
   }
 }
 
-function writeStderr(text: string, stderrFile: string | null): void {
-  if (stderrFile !== null) {
-    writeFileSync(stderrFile, text, { flag: "w" });
-  } else {
-    process.stderr.write(text);
-  }
-}
-
-function createRedirectFile(stdoutTarget: RedirectTarget | null): void {
-  if (stdoutTarget === null) {
+function createRedirectFile(target: RedirectTarget | null): void {
+  if (target === null) {
     return;
   }
 
-  writeFileSync(stdoutTarget.file, "", {
-    flag: stdoutTarget.append ? "a" : "w",
+  writeFileSync(target.file, "", {
+    flag: target.append ? "a" : "w",
   });
-}
-
-function createEmptyStderrFile(stderrFile: string | null): void {
-  if (stderrFile !== null) {
-    writeFileSync(stderrFile, "", { flag: "w" });
-  }
 }
 
 function findExecutable(command: string): string | null {
@@ -235,8 +248,7 @@ function findExecutable(command: string): string | null {
       accessSync(fullPath, constants.X_OK);
       return fullPath;
     } catch {
-      // File does not exist, or exists but is not executable.
-      // Keep searching the rest of PATH.
+      // Not found or not executable, keep searching.
     }
   }
 
@@ -257,11 +269,11 @@ rl.on("line", (input: string) => {
 
   const tokens = parsed.tokens;
   const stdoutTarget = parsed.stdoutTarget;
-  const stderrFile = parsed.stderrFile;
+  const stderrTarget = parsed.stderrTarget;
 
   if (tokens.length === 0) {
-    createEmptyRedirectFile(stdoutFile);
-    createEmptyStderrFile(stderrFile);
+    createRedirectFile(stdoutTarget);
+    createRedirectFile(stderrTarget);
     rl.prompt();
     return;
   }
@@ -276,19 +288,18 @@ rl.on("line", (input: string) => {
   }
 
   if (command === "echo") {
-    createEmptyStderrFile(stderrFile);
-    writeStdout(`${args.join(" ")}\n`, stdoutTarget);
+    createRedirectFile(stderrTarget);
+    writeToRedirectOrStream(`${args.join(" ")}\n`, stdoutTarget, process.stdout);
     rl.prompt();
     return;
   }
 
   if (command === "pwd") {
-    createEmptyStderrFile(stderrFile);
-    writeStdout(`${process.cwd()}\n`, stdoutTarget);
+    createRedirectFile(stderrTarget);
+    writeToRedirectOrStream(`${process.cwd()}\n`, stdoutTarget, process.stdout);
     rl.prompt();
     return;
   }
-
 
   if (command === "cd") {
     createRedirectFile(stdoutTarget);
@@ -302,11 +313,12 @@ rl.on("line", (input: string) => {
 
     try {
       process.chdir(directory ?? "");
-      createEmptyStderrFile(stderrFile);
+      createRedirectFile(stderrTarget);
     } catch {
-      writeStderr(
+      writeToRedirectOrStream(
         `cd: ${originalDirectory}: No such file or directory\n`,
-        stderrFile,
+        stderrTarget,
+        process.stderr,
       );
     }
 
@@ -315,19 +327,31 @@ rl.on("line", (input: string) => {
   }
 
   if (command === "type") {
-    createEmptyStderrFile(stderrFile);
+    createRedirectFile(stderrTarget);
 
     const commandToCheck = args[0] ?? "";
 
     if (builtins.has(commandToCheck)) {
-      writeStdout(`${commandToCheck} is a shell builtin\n`, stdoutTarget);
+      writeToRedirectOrStream(
+        `${commandToCheck} is a shell builtin\n`,
+        stdoutTarget,
+        process.stdout,
+      );
     } else {
       const executablePath = findExecutable(commandToCheck);
 
       if (executablePath !== null) {
-        writeStdout(`${commandToCheck} is ${executablePath}\n`, stdoutTarget);
+        writeToRedirectOrStream(
+          `${commandToCheck} is ${executablePath}\n`,
+          stdoutTarget,
+          process.stdout,
+        );
       } else {
-        writeStdout(`${commandToCheck}: not found\n`, stdoutTarget);
+        writeToRedirectOrStream(
+          `${commandToCheck}: not found\n`,
+          stdoutTarget,
+          process.stdout,
+        );
       }
     }
 
@@ -343,7 +367,10 @@ rl.on("line", (input: string) => {
         ? openSync(stdoutTarget.file, stdoutTarget.append ? "a" : "w")
         : "inherit";
 
-    const stderrFd = stderrFile !== null ? openSync(stderrFile, "w") : "inherit";
+    const stderrFd =
+      stderrTarget !== null
+        ? openSync(stderrTarget.file, stderrTarget.append ? "a" : "w")
+        : "inherit";
 
     try {
       spawnSync(executablePath, args, {
@@ -364,6 +391,11 @@ rl.on("line", (input: string) => {
     return;
   }
 
-  console.log(`${command}: command not found`);
+  createRedirectFile(stdoutTarget);
+  writeToRedirectOrStream(
+    `${command}: command not found\n`,
+    stderrTarget,
+    process.stderr,
+  );
   rl.prompt();
 });
