@@ -54,6 +54,19 @@ rl.on("line", (input: string) => {
     return;
   }
 
+  if (command === "cd") {
+    const directory = args[0];
+
+    try {
+      process.chdir(directory);
+    } catch {
+      console.log(`cd: ${directory}: No such file or directory`);
+    }
+
+    rl.prompt();
+    return;
+  }
+
   if (command === "type") {
     const commandToCheck = args[0];
 
