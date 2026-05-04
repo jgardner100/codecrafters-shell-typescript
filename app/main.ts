@@ -22,6 +22,19 @@ function parseCommandLine(input: string): ShellToken[] {
   for (let i = 0; i < input.length; i++) {
     const char = input[i];
 
+    if (char === "\\" && !inSingleQuotes && !inDoubleQuotes) {
+      if (i + 1 < input.length) {
+        current += input[i + 1];
+        i++;
+      } else {
+        current += char;
+      }
+
+      buildingToken = true;
+      currentWasQuoted = true;
+      continue;
+    }
+
     if (char === "'" && !inDoubleQuotes) {
       inSingleQuotes = !inSingleQuotes;
       currentWasQuoted = true;
