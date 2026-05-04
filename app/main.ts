@@ -1,6 +1,7 @@
 import { createInterface } from "readline";
 import { accessSync, constants } from "fs";
 import path from "path";
+import { spawnSync } from "child_process";
 
 const builtins = new Set(["echo", "exit", "type"]);
 
@@ -61,6 +62,18 @@ rl.on("line", (input: string) => {
         console.log(`${commandToCheck}: not found`);
       }
     }
+
+    rl.prompt();
+    return;
+  }
+
+  const executablePath = findExecutable(command);
+
+  if (executablePath !== null) {
+    spawnSync(executablePath, args, {
+      stdio: "inherit",
+      argv0: command,
+    });
 
     rl.prompt();
     return;
