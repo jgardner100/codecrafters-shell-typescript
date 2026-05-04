@@ -16,6 +16,17 @@ type ShellToken = {
   quoted: boolean;
 };
 
+type RedirectTarget = {
+  file: string;
+  append: boolean;
+};
+
+type ParsedCommand = {
+  tokens: ShellToken[];
+  stdoutTarget: RedirectTarget | null;
+  stderrFile: string | null;
+};
+
 function parseCommandLine(input: string): ShellToken[] {
   const tokens: ShellToken[] = [];
 
@@ -28,7 +39,6 @@ function parseCommandLine(input: string): ShellToken[] {
   for (let i = 0; i < input.length; i++) {
     const char = input[i];
 
-    // Backslash outside quotes: escape any next character.
     if (char === "\\" && !inSingleQuotes && !inDoubleQuotes) {
       if (i + 1 < input.length) {
         current += input[i + 1];
@@ -42,7 +52,6 @@ function parseCommandLine(input: string): ShellToken[] {
       continue;
     }
 
-    // Backslash inside double quotes: only \" and \\ are special here.
     if (char === "\\" && inDoubleQuotes) {
       const nextChar = input[i + 1];
 
@@ -103,26 +112,58 @@ function parseCommandLine(input: string): ShellToken[] {
 
 function extractRedirections(tokens: ShellToken[]): ParsedCommand {
   const commandTokens: ShellToken[] = [];
-  let stdoutFile: string | null = null;
+
+  let stdoutTarget: RedirectTarget | null = null;
   let stderrFile: string | null = null;
 
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
 
+    if (!token.quoted && (token.value === ">>" || token.value === "1>>")) {
+      stdoutTarget = {
+        file: tokens[i + 1]?.value ?? "",
+        append: true,
+      };
+      i++;
+      continue;
+    }
+
     if (!token.quoted && (token.value === ">" || token.value === "1>")) {
-      stdoutFile = tokens[i + 1]?.value ?? null;
+      stdoutTarget = {
+        file: tokens[i + 1]?.value ?? "",
+        append: false,
+      };
       i++;
       continue;
     }
 
     if (!token.quoted && token.value === "2>") {
-      stderrFile = tokens[i + 1]?.value ?? null;
+      stderrFile = tokens[i + 1]?.value ?? "";
       i++;
       continue;
     }
 
+    if (!token.quoted && token.value.startsWith("1>>") && token.value.length > 3) {
+      stdoutTarget = {
+        file: token.value.slice(3),
+        append: true,
+      };
+      continue;
+    }
+
+    if (!token.quoted && token.value.startsWith(">>") && token.value.length > 2) {
+      stdoutTarget = {
+        file: token.value.slice(2),
+        append: true,
+      };
+      continue;
+    }
+
     if (!token.quoted && token.value.startsWith("1>") && token.value.length > 2) {
-      stdoutFile = token.value.slice(2);
+      stdoutTarget = {
+        file: token.value.slice(2),
+        append: false,
+      };
       continue;
     }
 
@@ -132,7 +173,10 @@ function extractRedirections(tokens: ShellToken[]): ParsedCommand {
     }
 
     if (!token.quoted && token.value.startsWith(">") && token.value.length > 1) {
-      stdoutFile = token.value.slice(1);
+      stdoutTarget = {
+        file: token.value.slice(1),
+        append: false,
+      };
       continue;
     }
 
@@ -141,14 +185,16 @@ function extractRedirections(tokens: ShellToken[]): ParsedCommand {
 
   return {
     tokens: commandTokens,
-    stdoutFile,
+    stdoutTarget,
     stderrFile,
   };
 }
 
-function writeStdout(text: string, stdoutFile: string | null): void {
-  if (stdoutFile !== null) {
-    writeFileSync(stdoutFile, text, { flag: "w" });
+function writeStdout(text: string, stdoutTarget: RedirectTarget | null): void {
+  if (stdoutTarget !== null) {
+    writeFileSync(stdoutTarget.file, text, {
+      flag: stdoutTarget.append ? "a" : "w",
+    });
   } else {
     process.stdout.write(text);
   }
@@ -162,12 +208,21 @@ function writeStderr(text: string, stderrFile: string | null): void {
   }
 }
 
-function createEmptyRedirectFile(file: string | null): void {
-  if (file !== null) {
-    writeFileSync(file, "", { flag: "w" });
+function createRedirectFile(stdoutTarget: RedirectTarget | null): void {
+  if (stdoutTarget === null) {
+    return;
   }
+
+  writeFileSync(stdoutTarget.file, "", {
+    flag: stdoutTarget.append ? "a" : "w",
+  });
 }
 
+function createEmptyStderrFile(stderrFile: string | null): void {
+  if (stderrFile !== null) {
+    writeFileSync(stderrFile, "", { flag: "w" });
+  }
+}
 
 function findExecutable(command: string): string | null {
   const pathEnv = process.env.PATH ?? "";
@@ -201,12 +256,12 @@ rl.on("line", (input: string) => {
   const parsed = extractRedirections(rawTokens);
 
   const tokens = parsed.tokens;
-  const stdoutFile = parsed.stdoutFile;
+  const stdoutTarget = parsed.stdoutTarget;
   const stderrFile = parsed.stderrFile;
 
   if (tokens.length === 0) {
     createEmptyRedirectFile(stdoutFile);
-    createEmptyRedirectFile(stderrFile);
+    createEmptyStderrFile(stderrFile);
     rl.prompt();
     return;
   }
@@ -221,20 +276,23 @@ rl.on("line", (input: string) => {
   }
 
   if (command === "echo") {
-    createEmptyRedirectFile(stderrFile);
-    writeStdout(`${args.join(" ")}\n`, stdoutFile);
+    createEmptyStderrFile(stderrFile);
+    writeStdout(`${args.join(" ")}\n`, stdoutTarget);
     rl.prompt();
     return;
   }
 
   if (command === "pwd") {
-    createEmptyRedirectFile(stderrFile);
-    writeStdout(`${process.cwd()}\n`, stdoutFile);
+    createEmptyStderrFile(stderrFile);
+    writeStdout(`${process.cwd()}\n`, stdoutTarget);
     rl.prompt();
     return;
   }
 
+
   if (command === "cd") {
+    createRedirectFile(stdoutTarget);
+
     const originalDirectory = argTokens[0]?.value;
     let directory = originalDirectory;
 
@@ -244,7 +302,7 @@ rl.on("line", (input: string) => {
 
     try {
       process.chdir(directory ?? "");
-      createEmptyRedirectFile(stderrFile);
+      createEmptyStderrFile(stderrFile);
     } catch {
       writeStderr(
         `cd: ${originalDirectory}: No such file or directory\n`,
@@ -257,19 +315,19 @@ rl.on("line", (input: string) => {
   }
 
   if (command === "type") {
-    createEmptyRedirectFile(stderrFile);
+    createEmptyStderrFile(stderrFile);
 
     const commandToCheck = args[0] ?? "";
 
     if (builtins.has(commandToCheck)) {
-      writeStdout(`${commandToCheck} is a shell builtin\n`, stdoutFile);
+      writeStdout(`${commandToCheck} is a shell builtin\n`, stdoutTarget);
     } else {
       const executablePath = findExecutable(commandToCheck);
 
       if (executablePath !== null) {
-        writeStdout(`${commandToCheck} is ${executablePath}\n`, stdoutFile);
+        writeStdout(`${commandToCheck} is ${executablePath}\n`, stdoutTarget);
       } else {
-        writeStdout(`${commandToCheck}: not found\n`, stdoutFile);
+        writeStdout(`${commandToCheck}: not found\n`, stdoutTarget);
       }
     }
 
@@ -280,7 +338,11 @@ rl.on("line", (input: string) => {
   const executablePath = findExecutable(command);
 
   if (executablePath !== null) {
-    const stdoutFd = stdoutFile !== null ? openSync(stdoutFile, "w") : "inherit";
+    const stdoutFd =
+      stdoutTarget !== null
+        ? openSync(stdoutTarget.file, stdoutTarget.append ? "a" : "w")
+        : "inherit";
+
     const stderrFd = stderrFile !== null ? openSync(stderrFile, "w") : "inherit";
 
     try {
