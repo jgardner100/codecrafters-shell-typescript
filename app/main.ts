@@ -1,5 +1,11 @@
 import { createInterface } from "readline";
-import { accessSync, constants } from "fs";
+import {
+  accessSync,
+  closeSync,
+  constants,
+  openSync,
+  writeFileSync,
+} from "fs";
 import path from "path";
 import { spawnSync } from "child_process";
 
@@ -36,8 +42,7 @@ function parseCommandLine(input: string): ShellToken[] {
       continue;
     }
 
-    // Backslash inside double quotes:
-    // only \" and \\ are special in this stage.
+    // Backslash inside double quotes: only \" and \\ are special here.
     if (char === "\\" && inDoubleQuotes) {
       const nextChar = input[i + 1];
 
@@ -96,6 +101,46 @@ function parseCommandLine(input: string): ShellToken[] {
   return tokens;
 }
 
+function extractStdoutRedirection(tokens: ShellToken[]): ParsedCommand {
+  const commandTokens: ShellToken[] = [];
+  let stdoutFile: string | null = null;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+
+    if (!token.quoted && (token.value === ">" || token.value === "1>")) {
+      stdoutFile = tokens[i + 1]?.value ?? null;
+      i++;
+      continue;
+    }
+
+    if (!token.quoted && token.value.startsWith("1>") && token.value.length > 2) {
+      stdoutFile = token.value.slice(2);
+      continue;
+    }
+
+    if (!token.quoted && token.value.startsWith(">") && token.value.length > 1) {
+      stdoutFile = token.value.slice(1);
+      continue;
+    }
+
+    commandTokens.push(token);
+  }
+
+  return {
+    tokens: commandTokens,
+    stdoutFile,
+  };
+}
+
+function writeStdout(text: string, stdoutFile: string | null): void {
+  if (stdoutFile !== null) {
+    writeFileSync(stdoutFile, text, { flag: "w" });
+  } else {
+    process.stdout.write(text);
+  }
+}
+
 function findExecutable(command: string): string | null {
   const pathEnv = process.env.PATH ?? "";
   const directories = pathEnv.split(path.delimiter);
@@ -124,9 +169,16 @@ const rl = createInterface({
 rl.prompt();
 
 rl.on("line", (input: string) => {
-  const tokens = parseCommandLine(input);
+  const rawTokens = parseCommandLine(input);
+  const parsed = extractStdoutRedirection(rawTokens);
+  const tokens = parsed.tokens;
+  const stdoutFile = parsed.stdoutFile;
 
   if (tokens.length === 0) {
+    if (stdoutFile !== null) {
+      writeFileSync(stdoutFile, "", { flag: "w" });
+    }
+
     rl.prompt();
     return;
   }
@@ -141,13 +193,13 @@ rl.on("line", (input: string) => {
   }
 
   if (command === "echo") {
-    console.log(args.join(" "));
+    writeStdout(`${args.join(" ")}\n`, stdoutFile);
     rl.prompt();
     return;
   }
 
   if (command === "pwd") {
-    console.log(process.cwd());
+    writeStdout(`${process.cwd()}\n`, stdoutFile);
     rl.prompt();
     return;
   }
@@ -174,7 +226,7 @@ rl.on("line", (input: string) => {
     const commandToCheck = args[0];
 
     if (builtins.has(commandToCheck)) {
-      console.log(`${commandToCheck} is a shell builtin`);
+      writeStdout(`${commandToCheck} is a shell builtin\n`, stdoutFile);
     } else {
       const executablePath = findExecutable(commandToCheck);
 
@@ -192,10 +244,23 @@ rl.on("line", (input: string) => {
   const executablePath = findExecutable(command);
 
   if (executablePath !== null) {
-    spawnSync(executablePath, args, {
-      stdio: "inherit",
-      argv0: command,
-    });
+    if (stdoutFile !== null) {
+      const fd = openSync(stdoutFile, "w");
+
+      try {
+        spawnSync(executablePath, args, {
+          stdio: ["inherit", fd, "inherit"],
+          argv0: command,
+        });
+      } finally {
+        closeSync(fd);
+      }
+    } else {
+      spawnSync(executablePath, args, {
+        stdio: "inherit",
+        argv0: command,
+      });
+    }
 
     rl.prompt();
     return;
