@@ -3,7 +3,7 @@ import { accessSync, constants } from "fs";
 import path from "path";
 import { spawnSync } from "child_process";
 
-const builtins = new Set(["echo", "exit", "type", "pwd"]);
+const builtins = new Set(["echo", "exit", "type", "pwd", "cd"]);
 
 function findExecutable(command: string): string | null {
   const pathEnv = process.env.PATH ?? "";
@@ -55,7 +55,11 @@ rl.on("line", (input: string) => {
   }
 
   if (command === "cd") {
-    const directory = args[0];
+    let directory = args[0];
+
+    if (directory === "~") {
+      directory = process.env.HOME;
+    }
 
     try {
       process.chdir(directory);
