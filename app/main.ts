@@ -3,7 +3,7 @@ import { accessSync, constants } from "fs";
 import path from "path";
 import { spawnSync } from "child_process";
 
-const builtins = new Set(["echo", "exit", "type"]);
+const builtins = new Set(["echo", "exit", "type", "pwd"]);
 
 function findExecutable(command: string): string | null {
   const pathEnv = process.env.PATH ?? "";
@@ -44,6 +44,12 @@ rl.on("line", (input: string) => {
 
   if (command === "echo") {
     console.log(args.join(" "));
+    rl.prompt();
+    return;
+  }
+
+  if (command === "pwd") {
+    console.log(process.cwd());
     rl.prompt();
     return;
   }
