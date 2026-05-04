@@ -101,9 +101,10 @@ function parseCommandLine(input: string): ShellToken[] {
   return tokens;
 }
 
-function extractStdoutRedirection(tokens: ShellToken[]): ParsedCommand {
+function extractRedirections(tokens: ShellToken[]): ParsedCommand {
   const commandTokens: ShellToken[] = [];
   let stdoutFile: string | null = null;
+  let stderrFile: string | null = null;
 
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
@@ -114,8 +115,19 @@ function extractStdoutRedirection(tokens: ShellToken[]): ParsedCommand {
       continue;
     }
 
+    if (!token.quoted && token.value === "2>") {
+      stderrFile = tokens[i + 1]?.value ?? null;
+      i++;
+      continue;
+    }
+
     if (!token.quoted && token.value.startsWith("1>") && token.value.length > 2) {
       stdoutFile = token.value.slice(2);
+      continue;
+    }
+
+    if (!token.quoted && token.value.startsWith("2>") && token.value.length > 2) {
+      stderrFile = token.value.slice(2);
       continue;
     }
 
@@ -130,6 +142,7 @@ function extractStdoutRedirection(tokens: ShellToken[]): ParsedCommand {
   return {
     tokens: commandTokens,
     stdoutFile,
+    stderrFile,
   };
 }
 
@@ -140,6 +153,21 @@ function writeStdout(text: string, stdoutFile: string | null): void {
     process.stdout.write(text);
   }
 }
+
+function writeStderr(text: string, stderrFile: string | null): void {
+  if (stderrFile !== null) {
+    writeFileSync(stderrFile, text, { flag: "w" });
+  } else {
+    process.stderr.write(text);
+  }
+}
+
+function createEmptyRedirectFile(file: string | null): void {
+  if (file !== null) {
+    writeFileSync(file, "", { flag: "w" });
+  }
+}
+
 
 function findExecutable(command: string): string | null {
   const pathEnv = process.env.PATH ?? "";
@@ -170,15 +198,15 @@ rl.prompt();
 
 rl.on("line", (input: string) => {
   const rawTokens = parseCommandLine(input);
-  const parsed = extractStdoutRedirection(rawTokens);
+  const parsed = extractRedirections(rawTokens);
+
   const tokens = parsed.tokens;
   const stdoutFile = parsed.stdoutFile;
+  const stderrFile = parsed.stderrFile;
 
   if (tokens.length === 0) {
-    if (stdoutFile !== null) {
-      writeFileSync(stdoutFile, "", { flag: "w" });
-    }
-
+    createEmptyRedirectFile(stdoutFile);
+    createEmptyRedirectFile(stderrFile);
     rl.prompt();
     return;
   }
@@ -193,12 +221,14 @@ rl.on("line", (input: string) => {
   }
 
   if (command === "echo") {
+    createEmptyRedirectFile(stderrFile);
     writeStdout(`${args.join(" ")}\n`, stdoutFile);
     rl.prompt();
     return;
   }
 
   if (command === "pwd") {
+    createEmptyRedirectFile(stderrFile);
     writeStdout(`${process.cwd()}\n`, stdoutFile);
     rl.prompt();
     return;
@@ -214,8 +244,12 @@ rl.on("line", (input: string) => {
 
     try {
       process.chdir(directory ?? "");
+      createEmptyRedirectFile(stderrFile);
     } catch {
-      console.log(`cd: ${originalDirectory}: No such file or directory`);
+      writeStderr(
+        `cd: ${originalDirectory}: No such file or directory\n`,
+        stderrFile,
+      );
     }
 
     rl.prompt();
@@ -223,7 +257,9 @@ rl.on("line", (input: string) => {
   }
 
   if (command === "type") {
-    const commandToCheck = args[0];
+    createEmptyRedirectFile(stderrFile);
+
+    const commandToCheck = args[0] ?? "";
 
     if (builtins.has(commandToCheck)) {
       writeStdout(`${commandToCheck} is a shell builtin\n`, stdoutFile);
@@ -231,9 +267,9 @@ rl.on("line", (input: string) => {
       const executablePath = findExecutable(commandToCheck);
 
       if (executablePath !== null) {
-        console.log(`${commandToCheck} is ${executablePath}`);
+        writeStdout(`${commandToCheck} is ${executablePath}\n`, stdoutFile);
       } else {
-        console.log(`${commandToCheck}: not found`);
+        writeStdout(`${commandToCheck}: not found\n`, stdoutFile);
       }
     }
 
@@ -244,22 +280,22 @@ rl.on("line", (input: string) => {
   const executablePath = findExecutable(command);
 
   if (executablePath !== null) {
-    if (stdoutFile !== null) {
-      const fd = openSync(stdoutFile, "w");
+    const stdoutFd = stdoutFile !== null ? openSync(stdoutFile, "w") : "inherit";
+    const stderrFd = stderrFile !== null ? openSync(stderrFile, "w") : "inherit";
 
-      try {
-        spawnSync(executablePath, args, {
-          stdio: ["inherit", fd, "inherit"],
-          argv0: command,
-        });
-      } finally {
-        closeSync(fd);
-      }
-    } else {
+    try {
       spawnSync(executablePath, args, {
-        stdio: "inherit",
+        stdio: ["inherit", stdoutFd, stderrFd],
         argv0: command,
       });
+    } finally {
+      if (typeof stdoutFd === "number") {
+        closeSync(stdoutFd);
+      }
+
+      if (typeof stderrFd === "number") {
+        closeSync(stderrFd);
+      }
     }
 
     rl.prompt();
