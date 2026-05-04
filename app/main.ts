@@ -1,5 +1,7 @@
 import { createInterface } from "readline";
 
+const builtins = new Set(["echo", "exit", "type"]);
+
 const rl = createInterface({
   input: process.stdin,
   output: process.stdout,
@@ -20,6 +22,19 @@ rl.on("line", (input: string) => {
 
   if (command === "echo") {
     console.log(args.join(" "));
+    rl.prompt();
+    return;
+  }
+
+  if (command === "type") {
+    const commandToCheck = args[0];
+
+    if (builtins.has(commandToCheck)) {
+      console.log(`${commandToCheck} is a shell builtin`);
+    } else {
+      console.log(`${commandToCheck}: not found`);
+    }
+
     rl.prompt();
     return;
   }
