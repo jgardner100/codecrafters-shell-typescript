@@ -22,9 +22,27 @@ function parseCommandLine(input: string): ShellToken[] {
   for (let i = 0; i < input.length; i++) {
     const char = input[i];
 
+    // Backslash outside quotes: escape any next character.
     if (char === "\\" && !inSingleQuotes && !inDoubleQuotes) {
       if (i + 1 < input.length) {
         current += input[i + 1];
+        i++;
+      } else {
+        current += char;
+      }
+
+      buildingToken = true;
+      currentWasQuoted = true;
+      continue;
+    }
+
+    // Backslash inside double quotes:
+    // only \" and \\ are special in this stage.
+    if (char === "\\" && inDoubleQuotes) {
+      const nextChar = input[i + 1];
+
+      if (nextChar === `"` || nextChar === "\\") {
+        current += nextChar;
         i++;
       } else {
         current += char;
