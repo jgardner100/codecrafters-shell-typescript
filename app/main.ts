@@ -15,20 +15,28 @@ function parseCommandLine(input: string): ShellToken[] {
 
   let current = "";
   let inSingleQuotes = false;
+  let inDoubleQuotes = false;
   let currentWasQuoted = false;
   let buildingToken = false;
 
   for (let i = 0; i < input.length; i++) {
     const char = input[i];
 
-    if (char === "'") {
+    if (char === "'" && !inDoubleQuotes) {
       inSingleQuotes = !inSingleQuotes;
       currentWasQuoted = true;
       buildingToken = true;
       continue;
     }
 
-    if (!inSingleQuotes && /\s/.test(char)) {
+    if (char === `"` && !inSingleQuotes) {
+      inDoubleQuotes = !inDoubleQuotes;
+      currentWasQuoted = true;
+      buildingToken = true;
+      continue;
+    }
+
+    if (!inSingleQuotes && !inDoubleQuotes && /\s/.test(char)) {
       if (buildingToken) {
         tokens.push({
           value: current,
