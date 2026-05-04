@@ -1,6 +1,27 @@
 import { createInterface } from "readline";
+import { accessSync, constants } from "fs";
+import path from "path";
 
 const builtins = new Set(["echo", "exit", "type"]);
+
+function findExecutable(command: string): string | null {
+  const pathEnv = process.env.PATH ?? "";
+  const directories = pathEnv.split(path.delimiter);
+
+  for (const directory of directories) {
+    const fullPath = path.join(directory, command);
+
+    try {
+      accessSync(fullPath, constants.X_OK);
+      return fullPath;
+    } catch {
+      // File does not exist, or exists but is not executable.
+      // Keep searching the rest of PATH.
+    }
+  }
+
+  return null;
+}
 
 const rl = createInterface({
   input: process.stdin,
@@ -32,7 +53,13 @@ rl.on("line", (input: string) => {
     if (builtins.has(commandToCheck)) {
       console.log(`${commandToCheck} is a shell builtin`);
     } else {
-      console.log(`${commandToCheck}: not found`);
+      const executablePath = findExecutable(commandToCheck);
+
+      if (executablePath !== null) {
+        console.log(`${commandToCheck} is ${executablePath}`);
+      } else {
+        console.log(`${commandToCheck}: not found`);
+      }
     }
 
     rl.prompt();
