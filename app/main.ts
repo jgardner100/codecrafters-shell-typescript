@@ -5,6 +5,58 @@ import { spawnSync } from "child_process";
 
 const builtins = new Set(["echo", "exit", "type", "pwd", "cd"]);
 
+type ShellToken = {
+  value: string;
+  quoted: boolean;
+};
+
+function parseCommandLine(input: string): ShellToken[] {
+  const tokens: ShellToken[] = [];
+
+  let current = "";
+  let inSingleQuotes = false;
+  let currentWasQuoted = false;
+  let buildingToken = false;
+
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i];
+
+    if (char === "'") {
+      inSingleQuotes = !inSingleQuotes;
+      currentWasQuoted = true;
+      buildingToken = true;
+      continue;
+    }
+
+    if (!inSingleQuotes && /\s/.test(char)) {
+      if (buildingToken) {
+        tokens.push({
+          value: current,
+          quoted: currentWasQuoted,
+        });
+
+        current = "";
+        currentWasQuoted = false;
+        buildingToken = false;
+      }
+
+      continue;
+    }
+
+    current += char;
+    buildingToken = true;
+  }
+
+  if (buildingToken) {
+    tokens.push({
+      value: current,
+      quoted: currentWasQuoted,
+    });
+  }
+
+  return tokens;
+}
+
 function findExecutable(command: string): string | null {
   const pathEnv = process.env.PATH ?? "";
   const directories = pathEnv.split(path.delimiter);
@@ -33,14 +85,21 @@ const rl = createInterface({
 rl.prompt();
 
 rl.on("line", (input: string) => {
-  const trimmedInput = input.trim();
+  const tokens = parseCommandLine(input);
 
-  if (trimmedInput === "exit") {
+  if (tokens.length === 0) {
+    rl.prompt();
+    return;
+  }
+
+  const command = tokens[0].value;
+  const argTokens = tokens.slice(1);
+  const args = argTokens.map((token) => token.value);
+
+  if (command === "exit") {
     rl.close();
     process.exit(0);
   }
-
-  const [command, ...args] = trimmedInput.split(/\s+/);
 
   if (command === "echo") {
     console.log(args.join(" "));
@@ -55,16 +114,17 @@ rl.on("line", (input: string) => {
   }
 
   if (command === "cd") {
-    let directory = args[0];
+    const originalDirectory = argTokens[0]?.value;
+    let directory = originalDirectory;
 
-    if (directory === "~") {
+    if (directory === "~" && !argTokens[0]?.quoted) {
       directory = process.env.HOME;
     }
 
     try {
-      process.chdir(directory);
+      process.chdir(directory ?? "");
     } catch {
-      console.log(`cd: ${directory}: No such file or directory`);
+      console.log(`cd: ${originalDirectory}: No such file or directory`);
     }
 
     rl.prompt();
