@@ -29,16 +29,20 @@ type ParsedCommand = {
 };
 
 function completer(line: string): [string[], string] {
-  // Only autocomplete the command name, not arguments.
+  // Only autocomplete the command name.
   if (line.includes(" ")) {
     return [[], line];
   }
 
-  const hits = autocompleteBuiltins
+  const matches = autocompleteBuiltins
     .filter((builtin) => builtin.startsWith(line))
     .map((builtin) => `${builtin} `);
 
-  return [hits, line];
+  if (matches.length === 0) {
+    process.stdout.write("\x07");
+  }
+
+  return [matches, line];
 }
 
 function parseCommandLine(input: string): ShellToken[] {
