@@ -10,6 +10,7 @@ import * as path from "path";
 import { spawnSync } from "child_process";
 
 const builtins = new Set(["echo", "exit", "type", "pwd", "cd"]);
+const autocompleteBuiltins = ["echo", "exit"];
 
 type ShellToken = {
   value: string;
@@ -26,6 +27,19 @@ type ParsedCommand = {
   stdoutTarget: RedirectTarget | null;
   stderrTarget: RedirectTarget | null;
 };
+
+function completer(line: string): [string[], string] {
+  // Only autocomplete the command name, not arguments.
+  if (line.includes(" ")) {
+    return [[], line];
+  }
+
+  const hits = autocompleteBuiltins
+    .filter((builtin) => builtin.startsWith(line))
+    .map((builtin) => `${builtin} `);
+
+  return [hits, line];
+}
 
 function parseCommandLine(input: string): ShellToken[] {
   const tokens: ShellToken[] = [];
@@ -259,6 +273,7 @@ const rl = createInterface({
   input: process.stdin,
   output: process.stdout,
   prompt: "$ ",
+  completer,
 });
 
 rl.prompt();
