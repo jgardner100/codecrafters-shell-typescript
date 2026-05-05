@@ -4,6 +4,8 @@ import {
   closeSync,
   constants,
   openSync,
+  readdirSync,
+  statSync,
   writeFileSync,
 } from "fs";
 import * as path from "path";
@@ -28,15 +30,54 @@ type ParsedCommand = {
   stderrTarget: RedirectTarget | null;
 };
 
+function getExecutableMatches(prefix: string): string[] {
+  const matches = new Set<string>();
+  const pathEnv = process.env.PATH ?? "";
+  const directories = pathEnv.split(path.delimiter);
+
+  for (const directory of directories) {
+    try {
+      const entries = readdirSync(directory);
+
+      for (const entry of entries) {
+        if (!entry.startsWith(prefix)) {
+          continue;
+        }
+
+        const fullPath = path.join(directory, entry);
+
+        try {
+          if (statSync(fullPath).isFile()) {
+            accessSync(fullPath, constants.X_OK);
+            matches.add(entry);
+          }
+        } catch {
+          // Not executable, not a file, or cannot be accessed.
+        }
+      }
+    } catch {
+      // Directory does not exist or cannot be read.
+    }
+  }
+
+  return [...matches];
+}
+
 function completer(line: string): [string[], string] {
-  // Only autocomplete the command name.
+  // Only autocomplete the command name, not arguments.
   if (line.includes(" ")) {
     return [[], line];
   }
 
-  const matches = autocompleteBuiltins
-    .filter((builtin) => builtin.startsWith(line))
-    .map((builtin) => `${builtin} `);
+  const builtinMatches = autocompleteBuiltins.filter((builtin) =>
+    builtin.startsWith(line),
+  );
+
+  const executableMatches = getExecutableMatches(line);
+
+  const matches = [...new Set([...builtinMatches, ...executableMatches])].map(
+    (match) => `${match} `,
+  );
 
   if (matches.length === 0) {
     process.stdout.write("\x07");
