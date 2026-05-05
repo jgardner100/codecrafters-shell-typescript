@@ -7,6 +7,7 @@ import {
   readdirSync,
   statSync,
   writeFileSync,
+  readdirSync,
 } from "fs";
 import * as path from "path";
 import { spawnSync } from "child_process";
@@ -30,6 +31,8 @@ type ParsedCommand = {
   stderrTarget: RedirectTarget | null;
 };
 
+let lastTabCompletionLine: string | null = null;
+
 function getExecutableMatches(prefix: string): string[] {
   const matches = new Set<string>();
   const pathEnv = process.env.PATH ?? "";
@@ -47,16 +50,14 @@ function getExecutableMatches(prefix: string): string[] {
         const fullPath = path.join(directory, entry);
 
         try {
-          if (statSync(fullPath).isFile()) {
-            accessSync(fullPath, constants.X_OK);
-            matches.add(entry);
-          }
+          accessSync(fullPath, constants.X_OK);
+          matches.add(entry);
         } catch {
-          // Not executable, not a file, or cannot be accessed.
+          // Not executable or not accessible.
         }
       }
     } catch {
-      // Directory does not exist or cannot be read.
+      // PATH entry does not exist or cannot be read.
     }
   }
 
@@ -75,15 +76,28 @@ function completer(line: string): [string[], string] {
 
   const executableMatches = getExecutableMatches(line);
 
-  const matches = [...new Set([...builtinMatches, ...executableMatches])].map(
-    (match) => `${match} `,
-  );
+  const matches = [...new Set([...builtinMatches, ...executableMatches])].sort();
 
   if (matches.length === 0) {
     process.stdout.write("\x07");
+    lastTabCompletionLine = null;
+    return [[], line];
   }
 
-  return [matches, line];
+  if (matches.length === 1) {
+    lastTabCompletionLine = null;
+    return [[`${matches[0]} `], line];
+  }
+
+  if (lastTabCompletionLine === line) {
+    process.stdout.write(`\n${matches.join("  ")}\n$ ${line}`);
+    lastTabCompletionLine = null;
+  } else {
+    process.stdout.write("\x07");
+    lastTabCompletionLine = line;
+  }
+
+  return [[], line];
 }
 
 function parseCommandLine(input: string): ShellToken[] {
