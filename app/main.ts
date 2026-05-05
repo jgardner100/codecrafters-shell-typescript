@@ -4,10 +4,9 @@ import {
   closeSync,
   constants,
   openSync,
-  readdirSync,
   statSync,
-  writeFileSync,
   readdirSync,
+  writeFileSync,
 } from "fs";
 import * as path from "path";
 import { spawnSync } from "child_process";
@@ -53,7 +52,7 @@ function getExecutableMatches(prefix: string): string[] {
           accessSync(fullPath, constants.X_OK);
           matches.add(entry);
         } catch {
-          // Not executable or not accessible.
+          // Not executable or cannot be accessed.
         }
       }
     } catch {
@@ -62,6 +61,26 @@ function getExecutableMatches(prefix: string): string[] {
   }
 
   return [...matches];
+}
+
+function longestCommonPrefix(values: string[]): string {
+  if (values.length === 0) {
+    return "";
+  }
+
+  let prefix = values[0];
+
+  for (const value of values.slice(1)) {
+    while (!value.startsWith(prefix)) {
+      prefix = prefix.slice(0, -1);
+
+      if (prefix === "") {
+        return "";
+      }
+    }
+  }
+
+  return prefix;
 }
 
 function completer(line: string): [string[], string] {
@@ -87,6 +106,13 @@ function completer(line: string): [string[], string] {
   if (matches.length === 1) {
     lastTabCompletionLine = null;
     return [[`${matches[0]} `], line];
+  }
+
+  const commonPrefix = longestCommonPrefix(matches);
+
+  if (commonPrefix.length > line.length) {
+    lastTabCompletionLine = null;
+    return [[commonPrefix], line];
   }
 
   if (lastTabCompletionLine === line) {
