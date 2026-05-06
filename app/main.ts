@@ -83,10 +83,36 @@ function longestCommonPrefix(values: string[]): string {
   return prefix;
 }
 
+function getFilenameMatches(prefix: string): string[] {
+  try {
+    return readdirSync(process.cwd(), { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.startsWith(prefix))
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
 function completer(line: string): [string[], string] {
-  // Only autocomplete the command name, not arguments.
-  if (line.includes(" ")) {
-    return [[], line];
+  const lastSpaceIndex = line.lastIndexOf(" ");
+
+  // If there is a space, complete the current argument as a filename.
+  // This works for any command, even a nonexistent one like:
+  // xyz read<TAB> -> xyz readme.txt
+  if (lastSpaceIndex !== -1) {
+    const filenamePrefix = line.slice(lastSpaceIndex + 1);
+    const filenameMatches = getFilenameMatches(filenamePrefix);
+
+    lastTabCompletionLine = null;
+
+    // This stage only requires handling a single matching filename.
+    if (filenameMatches.length === 1) {
+      return [[`${filenameMatches[0]} `], filenamePrefix];
+    }
+
+    process.stdout.write("\x07");
+    return [[], filenamePrefix];
   }
 
   const builtinMatches = autocompleteBuiltins.filter((builtin) =>
