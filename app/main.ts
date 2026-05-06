@@ -119,25 +119,57 @@ function getFilenameMatches(partialFilename: string): string[] {
   }
 }
 
+function getPathMatches(partialPath: string): string[] {
+  const lastSlashIndex = partialPath.lastIndexOf("/");
+
+  const directoryPath =
+    lastSlashIndex === -1 ? "." : partialPath.slice(0, lastSlashIndex + 1);
+
+  const entryPrefix =
+    lastSlashIndex === -1
+      ? partialPath
+      : partialPath.slice(lastSlashIndex + 1);
+
+  try {
+    return readdirSync(directoryPath)
+      .filter((entry) => entry.startsWith(entryPrefix))
+      .map((entry) => {
+        const completedPath =
+          lastSlashIndex === -1 ? entry : `${directoryPath}${entry}`;
+
+        try {
+          if (statSync(completedPath).isDirectory()) {
+            return `${completedPath}/`;
+          }
+        } catch {
+          // Ignore entries we cannot stat.
+        }
+
+        return `${completedPath} `;
+      })
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
 function completer(line: string): [string[], string] {
   const lastSpaceIndex = line.lastIndexOf(" ");
 
-  // If there is a space, complete the current argument as a filename.
-  // This works for any command, even a nonexistent one like:
-  // xyz read<TAB> -> xyz readme.txt
+  // Complete arguments as files or directories.
   if (lastSpaceIndex !== -1) {
-    const filenamePrefix = line.slice(lastSpaceIndex + 1);
-    const filenameMatches = getFilenameMatches(filenamePrefix);
+    const partialPath = line.slice(lastSpaceIndex + 1);
+    const pathMatches = getPathMatches(partialPath);
 
     lastTabCompletionLine = null;
 
-    // This stage only requires handling a single matching filename.
-    if (filenameMatches.length === 1) {
-      return [[`${filenameMatches[0]} `], filenamePrefix];
+    // This stage only requires handling a single match.
+    if (pathMatches.length === 1) {
+      return [[pathMatches[0]], partialPath];
     }
 
     process.stdout.write("\x07");
-    return [[], filenamePrefix];
+    return [[], partialPath];
   }
 
   const builtinMatches = autocompleteBuiltins.filter((builtin) =>
