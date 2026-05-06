@@ -83,17 +83,6 @@ function longestCommonPrefix(values: string[]): string {
   return prefix;
 }
 
-//function getFilenameMatches(prefix: string): string[] {
-//  try {
-//    return readdirSync(process.cwd(), { withFileTypes: true })
-//      .filter((entry) => entry.isFile() && entry.name.startsWith(prefix))
-//      .map((entry) => entry.name)
-//      .sort();
-//  } catch {
-//    return [];
-//  }
-//}
-
 function getFilenameMatches(partialFilename: string): string[] {
   const lastSlashIndex = partialFilename.lastIndexOf("/");
 
@@ -153,6 +142,52 @@ function getPathMatches(partialPath: string): string[] {
   }
 }
 
+type PathCompletionMatch = {
+  completion: string;
+  display: string;
+};
+
+function getPathMatches(partialPath: string): PathCompletionMatch[] {
+  const lastSlashIndex = partialPath.lastIndexOf("/");
+
+  const directoryPath =
+    lastSlashIndex === -1 ? "." : partialPath.slice(0, lastSlashIndex + 1);
+
+  const entryPrefix =
+    lastSlashIndex === -1
+      ? partialPath
+      : partialPath.slice(lastSlashIndex + 1);
+
+  try {
+    return readdirSync(directoryPath)
+      .filter((entry) => entry.startsWith(entryPrefix))
+      .map((entry): PathCompletionMatch | null => {
+        const completedPath =
+          lastSlashIndex === -1 ? entry : `${directoryPath}${entry}`;
+
+        try {
+          if (statSync(completedPath).isDirectory()) {
+            return {
+              completion: `${completedPath}/`,
+              display: `${completedPath}/`,
+            };
+          }
+
+          return {
+            completion: `${completedPath} `,
+            display: completedPath,
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter((match): match is PathCompletionMatch => match !== null)
+      .sort((a, b) => a.display.localeCompare(b.display));
+  } catch {
+    return [];
+  }
+}
+
 function completer(line: string): [string[], string] {
   const lastSpaceIndex = line.lastIndexOf(" ");
 
@@ -161,14 +196,27 @@ function completer(line: string): [string[], string] {
     const partialPath = line.slice(lastSpaceIndex + 1);
     const pathMatches = getPathMatches(partialPath);
 
-    lastTabCompletionLine = null;
-
-    // This stage only requires handling a single match.
-    if (pathMatches.length === 1) {
-      return [[pathMatches[0]], partialPath];
+    if (pathMatches.length === 0) {
+      process.stdout.write("\x07");
+      lastTabCompletionLine = null;
+      return [[], partialPath];
     }
 
-    process.stdout.write("\x07");
+    if (pathMatches.length === 1) {
+      lastTabCompletionLine = null;
+      return [[pathMatches[0].completion], partialPath];
+    }
+
+    if (lastTabCompletionLine === line) {
+      const displayMatches = pathMatches.map((match) => match.display);
+
+      process.stdout.write(`\n${displayMatches.join("  ")}\n$ ${line}`);
+      lastTabCompletionLine = null;
+    } else {
+      process.stdout.write("\x07");
+      lastTabCompletionLine = line;
+    }
+
     return [[], partialPath];
   }
 
