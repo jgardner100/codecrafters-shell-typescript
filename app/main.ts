@@ -83,11 +83,36 @@ function longestCommonPrefix(values: string[]): string {
   return prefix;
 }
 
-function getFilenameMatches(prefix: string): string[] {
+//function getFilenameMatches(prefix: string): string[] {
+//  try {
+//    return readdirSync(process.cwd(), { withFileTypes: true })
+//      .filter((entry) => entry.isFile() && entry.name.startsWith(prefix))
+//      .map((entry) => entry.name)
+//      .sort();
+//  } catch {
+//    return [];
+//  }
+//}
+
+function getFilenameMatches(partialFilename: string): string[] {
+  const lastSlashIndex = partialFilename.lastIndexOf("/");
+
+  const directoryPath =
+    lastSlashIndex === -1 ? "." : partialFilename.slice(0, lastSlashIndex + 1);
+
+  const filenamePrefix =
+    lastSlashIndex === -1
+      ? partialFilename
+      : partialFilename.slice(lastSlashIndex + 1);
+
   try {
-    return readdirSync(process.cwd(), { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.startsWith(prefix))
-      .map((entry) => entry.name)
+    return readdirSync(directoryPath, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.startsWith(filenamePrefix))
+      .map((entry) =>
+        lastSlashIndex === -1
+          ? entry.name
+          : `${directoryPath}${entry.name}`,
+      )
       .sort();
   } catch {
     return [];
