@@ -606,6 +606,27 @@ rl.on("line", (input: string) => {
     return;
   }
 
+  if (command === "complete") {
+    createRedirectFile(stdoutTarget);
+
+    if (args[0] === "-p") {
+      const commandName = args[1] ?? "";
+
+      writeToRedirectOrStream(
+        `complete: ${commandName}: no completion specification\n`,
+        stderrTarget,
+        process.stderr,
+      );
+
+      rl.prompt();
+      return;
+    }
+
+    createRedirectFile(stderrTarget);
+    rl.prompt();
+    return;
+  }
+
   const executablePath = findExecutable(command);
 
   if (executablePath !== null) {
