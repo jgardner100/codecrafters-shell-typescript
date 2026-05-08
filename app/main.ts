@@ -145,6 +145,7 @@ function getPathMatches(partialPath: string): string[] {
 type PathCompletionMatch = {
   completion: string;
   display: string;
+  lcpValue: string;
 };
 
 function getPathMatches(partialPath: string): PathCompletionMatch[] {
@@ -170,12 +171,14 @@ function getPathMatches(partialPath: string): PathCompletionMatch[] {
             return {
               completion: `${completedPath}/`,
               display: `${completedPath}/`,
+              lcpValue: completedPath,
             };
           }
 
           return {
             completion: `${completedPath} `,
             display: completedPath,
+            lcpValue: completedPath,
           };
         } catch {
           return null;
@@ -191,7 +194,7 @@ function getPathMatches(partialPath: string): PathCompletionMatch[] {
 function completer(line: string): [string[], string] {
   const lastSpaceIndex = line.lastIndexOf(" ");
 
-  // Complete arguments as files or directories.
+  // Complete arguments as files/directories.
   if (lastSpaceIndex !== -1) {
     const partialPath = line.slice(lastSpaceIndex + 1);
     const pathMatches = getPathMatches(partialPath);
@@ -207,6 +210,19 @@ function completer(line: string): [string[], string] {
       return [[pathMatches[0].completion], partialPath];
     }
 
+    const commonPrefix = longestCommonPrefix(
+      pathMatches.map((match) => match.lcpValue),
+    );
+
+    // Multiple matches, but they share more text than the user has typed.
+    // Complete only to the LCP. Do not add "/" or " " yet.
+    if (commonPrefix.length > partialPath.length) {
+      lastTabCompletionLine = null;
+      return [[commonPrefix], partialPath];
+    }
+
+    // Multiple matches and no extra common prefix:
+    // first tab rings bell, second tab lists matches.
     if (lastTabCompletionLine === line) {
       const displayMatches = pathMatches.map((match) => match.display);
 
