@@ -11,7 +11,7 @@ import {
 import * as path from "path";
 import { spawnSync } from "child_process";
 
-const builtins = new Set(["echo", "exit", "type", "pwd", "cd"]);
+const builtins = new Set(["echo", "exit", "type", "pwd", "cd", "complete"]);
 const autocompleteBuiltins = ["echo", "exit"];
 
 type ShellToken = {
