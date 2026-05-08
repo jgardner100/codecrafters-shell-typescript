@@ -14,6 +14,8 @@ import { spawnSync } from "child_process";
 const builtins = new Set(["echo", "exit", "type", "pwd", "cd", "complete"]);
 const autocompleteBuiltins = ["echo", "exit"];
 
+const completionSpecs = new Map<string, string>();
+
 type ShellToken = {
   value: string;
   quoted: boolean;
@@ -607,21 +609,47 @@ rl.on("line", (input: string) => {
   }
 
   if (command === "complete") {
-    createRedirectFile(stdoutTarget);
+    if (args[0] === "-C") {
+      const completerPath = args[1];
+      const commandName = args[2];
+
+      if (completerPath !== undefined && commandName !== undefined) {
+        completionSpecs.set(commandName, completerPath);
+      }
+
+      createRedirectFile(stdoutTarget);
+      createRedirectFile(stderrTarget);
+      rl.prompt();
+      return;
+    }
 
     if (args[0] === "-p") {
       const commandName = args[1] ?? "";
+      const completerPath = completionSpecs.get(commandName);
 
-      writeToRedirectOrStream(
-        `complete: ${commandName}: no completion specification\n`,
-        stderrTarget,
-        process.stderr,
-      );
+      if (completerPath !== undefined) {
+        createRedirectFile(stderrTarget);
+
+        writeToRedirectOrStream(
+          `complete -C '${completerPath}' ${commandName}\n`,
+          stdoutTarget,
+          process.stdout,
+        );
+      } else {
+        createRedirectFile(stdoutTarget);
+
+        writeToRedirectOrStream(
+          `complete: ${commandName}: no completion specification\n`,
+          stderrTarget,
+          process.stderr,
+        );
+      }
 
       rl.prompt();
       return;
     }
 
+    createRedirectFile(stdoutTarget);
     createRedirectFile(stderrTarget);
     rl.prompt();
     return;
