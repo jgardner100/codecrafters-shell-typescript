@@ -110,40 +110,6 @@ function getFilenameMatches(partialFilename: string): string[] {
   }
 }
 
-function getPathMatches(partialPath: string): string[] {
-  const lastSlashIndex = partialPath.lastIndexOf("/");
-
-  const directoryPath =
-    lastSlashIndex === -1 ? "." : partialPath.slice(0, lastSlashIndex + 1);
-
-  const entryPrefix =
-    lastSlashIndex === -1
-      ? partialPath
-      : partialPath.slice(lastSlashIndex + 1);
-
-  try {
-    return readdirSync(directoryPath)
-      .filter((entry) => entry.startsWith(entryPrefix))
-      .map((entry) => {
-        const completedPath =
-          lastSlashIndex === -1 ? entry : `${directoryPath}${entry}`;
-
-        try {
-          if (statSync(completedPath).isDirectory()) {
-            return `${completedPath}/`;
-          }
-        } catch {
-          // Ignore entries we cannot stat.
-        }
-
-        return `${completedPath} `;
-      })
-      .sort();
-  } catch {
-    return [];
-  }
-}
-
 type PathCompletionMatch = {
   completion: string;
   display: string;
@@ -193,7 +159,52 @@ function getPathMatches(partialPath: string): PathCompletionMatch[] {
   }
 }
 
+function getRegisteredCompleterResult(line: string): [string[], string] | null {
+  const firstSpaceIndex = line.indexOf(" ");
+
+  if (firstSpaceIndex === -1) {
+    return null;
+  }
+
+  const commandName = line.slice(0, firstSpaceIndex);
+  const completerPath = completionSpecs.get(commandName);
+
+  if (completerPath === undefined) {
+    return null;
+  }
+
+  const currentWord = line.slice(line.lastIndexOf(" ") + 1);
+  const result = spawnSync(completerPath, [], {
+    encoding: "utf8",
+  });
+
+  if (result.error || result.status !== 0) {
+    process.stdout.write("\x07");
+    lastTabCompletionLine = null;
+    return [[], currentWord];
+  }
+
+  const candidate = result.stdout
+    .split(/\r?\n/)
+    .find((outputLine) => outputLine.length > 0);
+
+  if (candidate === undefined) {
+    process.stdout.write("\x07");
+    lastTabCompletionLine = null;
+    return [[], currentWord];
+  }
+
+  lastTabCompletionLine = null;
+  return [[`${candidate} `], currentWord];
+}
+
 function completer(line: string): [string[], string] {
+  const registeredCompletion = getRegisteredCompleterResult(line);
+
+  if (registeredCompletion !== null) {
+    return registeredCompletion;
+  }
+
   const lastSpaceIndex = line.lastIndexOf(" ");
 
   // Complete arguments as files/directories.
