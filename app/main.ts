@@ -192,18 +192,31 @@ function getRegisteredCompleterResult(line: string): [string[], string] | null {
     return [[], currentWord];
   }
 
-  const candidate = result.stdout
+  const candidates = result.stdout
     .split(/\r?\n/)
-    .find((outputLine) => outputLine.length > 0);
+    .filter((outputLine) => outputLine.length > 0)
+    .sort();
 
-  if (candidate === undefined) {
+  if (candidates.length === 0) {
     process.stdout.write("\x07");
     lastTabCompletionLine = null;
     return [[], currentWord];
   }
 
-  lastTabCompletionLine = null;
-  return [[`${candidate} `], currentWord];
+  if (candidates.length === 1) {
+    lastTabCompletionLine = null;
+    return [[`${candidates[0]} `], currentWord];
+  }
+
+  if (lastTabCompletionLine === line) {
+    process.stdout.write(`\n${candidates.join("  ")}\n$ ${line}`);
+    lastTabCompletionLine = null;
+  } else {
+    process.stdout.write("\x07");
+    lastTabCompletionLine = line;
+  }
+
+  return [[], currentWord];
 }
 
 function completer(line: string): [string[], string] {
