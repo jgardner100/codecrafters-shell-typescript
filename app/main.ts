@@ -11,7 +11,7 @@ import {
 import * as path from "path";
 import { spawnSync } from "child_process";
 
-const builtins = new Set(["echo", "exit", "type", "pwd", "cd", "complete"]);
+const builtins = new Set(["echo", "exit", "type", "pwd", "cd", "complete", "jobs"]);
 const autocompleteBuiltins = ["echo", "exit"];
 
 const completionSpecs = new Map<string, string>();
@@ -609,6 +609,12 @@ rl.on("line", (input: string) => {
         process.stderr,
       );
     }
+
+    rl.prompt();
+    return;
+  }
+
+  if (command === "jobs") {
 
     rl.prompt();
     return;
