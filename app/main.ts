@@ -175,7 +175,7 @@ function getRegisteredCompleterResult(line: string): [string[], string] | null {
 
   const words = line.split(" ");
   const currentWord = words[words.length - 1];
-  const previousWord = words.length >= 3 ? words[words.length - 2] : "";
+  const previousWord = words.length >= 2 ? words[words.length - 2] : "";
 
   const result = spawnSync(completerPath, [commandName, currentWord, previousWord], {
     encoding: "utf8",
