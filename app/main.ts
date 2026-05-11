@@ -179,6 +179,11 @@ function getRegisteredCompleterResult(line: string): [string[], string] | null {
 
   const result = spawnSync(completerPath, [commandName, currentWord, previousWord], {
     encoding: "utf8",
+    env: {
+      ...process.env,
+      COMP_LINE: line,
+      COMP_POINT: Buffer.byteLength(line, "utf8").toString(),
+    },
   });
 
   if (result.error || result.status !== 0) {
