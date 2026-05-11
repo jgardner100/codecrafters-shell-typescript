@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "fs";
 import * as path from "path";
-import { spawnSync } from "child_process";
+import { spawn, spawnSync } from "child_process";
 
 const builtins = new Set(["echo", "exit", "type", "pwd", "cd", "complete", "jobs"]);
 const autocompleteBuiltins = ["echo", "exit"];
@@ -33,6 +33,7 @@ type ParsedCommand = {
 };
 
 let lastTabCompletionLine: string | null = null;
+let nextBackgroundJobNumber = 1;
 
 function getExecutableMatches(prefix: string): string[] {
   const matches = new Set<string>();
@@ -559,6 +560,15 @@ rl.on("line", (input: string) => {
   const stdoutTarget = parsed.stdoutTarget;
   const stderrTarget = parsed.stderrTarget;
 
+  const runInBackground =
+    tokens.length > 0 &&
+    !tokens[tokens.length - 1].quoted &&
+    tokens[tokens.length - 1].value === "&";
+
+  if (runInBackground) {
+    tokens.pop();
+  }
+
   if (tokens.length === 0) {
     createRedirectFile(stdoutTarget);
     createRedirectFile(stderrTarget);
@@ -596,7 +606,7 @@ rl.on("line", (input: string) => {
     let directory = originalDirectory;
 
     if (directory === "~" && !argTokens[0]?.quoted) {
-      directory = process.env.HOME;
+      directory = process.env.HOME ?? "";
     }
 
     try {
@@ -725,6 +735,35 @@ rl.on("line", (input: string) => {
       stderrTarget !== null
         ? openSync(stderrTarget.file, stderrTarget.append ? "a" : "w")
         : "inherit";
+
+    if (runInBackground) {
+      const child = spawn(executablePath, args, {
+        stdio: ["ignore", stdoutFd, stderrFd],
+        argv0: command,
+      });
+
+      const jobNumber = nextBackgroundJobNumber++;
+      process.stdout.write(`[${jobNumber}] ${child.pid}\n`);
+
+      child.on("error", () => {
+        // Errors are intentionally ignored here so the prompt can return
+        // immediately after starting a background job.
+      });
+
+      child.on("close", () => {
+        if (typeof stdoutFd === "number") {
+          closeSync(stdoutFd);
+        }
+
+        if (typeof stderrFd === "number") {
+          closeSync(stderrFd);
+        }
+      });
+
+      child.unref();
+      rl.prompt();
+      return;
+    }
 
     try {
       spawnSync(executablePath, args, {
