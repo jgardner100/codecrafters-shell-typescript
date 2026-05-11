@@ -208,6 +208,13 @@ function getRegisteredCompleterResult(line: string): [string[], string] | null {
     return [[`${candidates[0]} `], currentWord];
   }
 
+  const commonPrefix = longestCommonPrefix(candidates);
+
+  if (commonPrefix.length > currentWord.length) {
+    lastTabCompletionLine = null;
+    return [[commonPrefix], currentWord];
+  }
+
   if (lastTabCompletionLine === line) {
     process.stdout.write(`\n${candidates.join("  ")}\n$ ${line}`);
     lastTabCompletionLine = null;
