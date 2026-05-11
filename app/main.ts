@@ -688,6 +688,19 @@ rl.on("line", (input: string) => {
       return;
     }
 
+    if (args[0] === "-r") {
+      const commandName = args[1];
+
+      if (commandName !== undefined) {
+        completionSpecs.delete(commandName);
+      }
+
+      createRedirectFile(stdoutTarget);
+      createRedirectFile(stderrTarget);
+      rl.prompt();
+      return;
+    }
+
     createRedirectFile(stdoutTarget);
     createRedirectFile(stderrTarget);
     rl.prompt();
