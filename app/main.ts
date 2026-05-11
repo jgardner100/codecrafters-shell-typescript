@@ -173,8 +173,11 @@ function getRegisteredCompleterResult(line: string): [string[], string] | null {
     return null;
   }
 
-  const currentWord = line.slice(line.lastIndexOf(" ") + 1);
-  const result = spawnSync(completerPath, [], {
+  const words = line.split(" ");
+  const currentWord = words[words.length - 1];
+  const previousWord = words.length >= 3 ? words[words.length - 2] : "";
+
+  const result = spawnSync(completerPath, [commandName, currentWord, previousWord], {
     encoding: "utf8",
   });
 
