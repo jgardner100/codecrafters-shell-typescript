@@ -642,10 +642,20 @@ rl.on("line", (input: string) => {
   if (command === "jobs") {
     createRedirectFile(stderrTarget);
 
+    const currentJobNumber = backgroundJobs[backgroundJobs.length - 1]?.jobNumber;
+    const previousJobNumber = backgroundJobs[backgroundJobs.length - 2]?.jobNumber;
+
     for (const job of backgroundJobs) {
+      const marker =
+        job.jobNumber === currentJobNumber
+          ? "+"
+          : job.jobNumber === previousJobNumber
+            ? "-"
+            : " ";
       const statusField = job.status.padEnd(24, " ");
+
       writeToRedirectOrStream(
-        `[${job.jobNumber}]+  ${statusField}${job.command}\n`,
+        `[${job.jobNumber}]${marker}  ${statusField}${job.command}\n`,
         stdoutTarget,
         process.stdout,
       );
