@@ -16,6 +16,13 @@ const autocompleteBuiltins = ["echo", "exit"];
 
 const completionSpecs = new Map<string, string>();
 
+type BackgroundJob = {
+  jobNumber: number;
+  pid: number;
+  command: string;
+  status: "Running";
+};
+
 type ShellToken = {
   value: string;
   quoted: boolean;
@@ -34,6 +41,7 @@ type ParsedCommand = {
 
 let lastTabCompletionLine: string | null = null;
 let nextBackgroundJobNumber = 1;
+const backgroundJobs: BackgroundJob[] = [];
 
 function getExecutableMatches(prefix: string): string[] {
   const matches = new Set<string>();
@@ -560,6 +568,13 @@ rl.on("line", (input: string) => {
   const stdoutTarget = parsed.stdoutTarget;
   const stderrTarget = parsed.stderrTarget;
 
+  if (tokens.length === 0) {
+    createRedirectFile(stdoutTarget);
+    createRedirectFile(stderrTarget);
+    rl.prompt();
+    return;
+  }
+
   const runInBackground =
     tokens.length > 0 &&
     !tokens[tokens.length - 1].quoted &&
@@ -625,6 +640,16 @@ rl.on("line", (input: string) => {
   }
 
   if (command === "jobs") {
+    createRedirectFile(stderrTarget);
+
+    for (const job of backgroundJobs) {
+      const statusField = job.status.padEnd(24, " ");
+      writeToRedirectOrStream(
+        `[${job.jobNumber}]+  ${statusField}${job.command}\n`,
+        stdoutTarget,
+        process.stdout,
+      );
+    }
 
     rl.prompt();
     return;
@@ -743,12 +768,15 @@ rl.on("line", (input: string) => {
       });
 
       const jobNumber = nextBackgroundJobNumber++;
-      process.stdout.write(`[${jobNumber}] ${child.pid}\n`);
+      const backgroundJob: BackgroundJob = {
+        jobNumber,
+        pid: child.pid ?? 0,
+        command: input.trim(),
+        status: "Running",
+      };
 
-      child.on("error", () => {
-        // Errors are intentionally ignored here so the prompt can return
-        // immediately after starting a background job.
-      });
+      backgroundJobs.push(backgroundJob);
+      process.stdout.write(`[${jobNumber}] ${backgroundJob.pid}\n`);
 
       child.on("close", () => {
         if (typeof stdoutFd === "number") {
