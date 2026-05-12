@@ -564,6 +564,58 @@ function refreshBackgroundJobStatuses(): void {
   }
 }
 
+function getJobMarker(job: BackgroundJob, jobs: BackgroundJob[]): string {
+  const currentJobNumber = jobs[jobs.length - 1]?.jobNumber;
+  const previousJobNumber = jobs[jobs.length - 2]?.jobNumber;
+
+  if (job.jobNumber === currentJobNumber) {
+    return "+";
+  }
+
+  if (job.jobNumber === previousJobNumber) {
+    return "-";
+  }
+
+  return " ";
+}
+
+function removeTrailingBackgroundMarker(command: string): string {
+  return command.replace(/\s*&\s*$/, "");
+}
+
+function removeDoneBackgroundJobs(): void {
+  for (let index = backgroundJobs.length - 1; index >= 0; index--) {
+    if (backgroundJobs[index].status === "Done") {
+      backgroundJobs.splice(index, 1);
+    }
+  }
+}
+
+function reapDoneJobs(outputTarget: RedirectTarget | null = null): void {
+  refreshBackgroundJobStatuses();
+
+  for (const job of backgroundJobs) {
+    if (job.status !== "Done") {
+      continue;
+    }
+
+    const marker = getJobMarker(job, backgroundJobs);
+    const statusField = "Done".padEnd(24, " ");
+
+    writeToRedirectOrStream(
+      `[${job.jobNumber}]${marker}  ${statusField}${removeTrailingBackgroundMarker(job.command)}\n`,
+      outputTarget,
+      process.stdout,
+    );
+  }
+
+  removeDoneBackgroundJobs();
+}
+
+function promptWithReap(): void {
+  reapDoneJobs();
+  rl.prompt();
+}
 
 const rl = createInterface({
   input: process.stdin,
@@ -572,7 +624,7 @@ const rl = createInterface({
   completer,
 });
 
-rl.prompt();
+promptWithReap();
 
 rl.on("line", (input: string) => {
   const rawTokens = parseCommandLine(input);
@@ -585,7 +637,7 @@ rl.on("line", (input: string) => {
   if (tokens.length === 0) {
     createRedirectFile(stdoutTarget);
     createRedirectFile(stderrTarget);
-    rl.prompt();
+    promptWithReap();
     return;
   }
 
@@ -601,7 +653,7 @@ rl.on("line", (input: string) => {
   if (tokens.length === 0) {
     createRedirectFile(stdoutTarget);
     createRedirectFile(stderrTarget);
-    rl.prompt();
+    promptWithReap();
     return;
   }
 
@@ -617,14 +669,14 @@ rl.on("line", (input: string) => {
   if (command === "echo") {
     createRedirectFile(stderrTarget);
     writeToRedirectOrStream(`${args.join(" ")}\n`, stdoutTarget, process.stdout);
-    rl.prompt();
+    promptWithReap();
     return;
   }
 
   if (command === "pwd") {
     createRedirectFile(stderrTarget);
     writeToRedirectOrStream(`${process.cwd()}\n`, stdoutTarget, process.stdout);
-    rl.prompt();
+    promptWithReap();
     return;
   }
 
@@ -649,42 +701,31 @@ rl.on("line", (input: string) => {
       );
     }
 
-    rl.prompt();
+    promptWithReap();
     return;
   }
 
   if (command === "jobs") {
     createRedirectFile(stderrTarget);
+
     refreshBackgroundJobStatuses();
 
-    const currentJobNumber = backgroundJobs[backgroundJobs.length - 1]?.jobNumber;
-    const previousJobNumber = backgroundJobs[backgroundJobs.length - 2]?.jobNumber;
-
     for (const job of backgroundJobs) {
-      const marker =
-        job.jobNumber === currentJobNumber
-          ? "+"
-          : job.jobNumber === previousJobNumber
-            ? "-"
-            : " ";
+      const marker = getJobMarker(job, backgroundJobs);
       const statusField = job.status.padEnd(24, " ");
-      const commandToDisplay =
-        job.status === "Done" ? job.command.replace(/\s*&\s*$/, "") : job.command;
+      const displayedCommand =
+        job.status === "Done"
+          ? removeTrailingBackgroundMarker(job.command)
+          : job.command;
 
       writeToRedirectOrStream(
-        `[${job.jobNumber}]${marker}  ${statusField}${commandToDisplay}
-`,
+        `[${job.jobNumber}]${marker}  ${statusField}${displayedCommand}\n`,
         stdoutTarget,
         process.stdout,
       );
     }
 
-    for (let index = backgroundJobs.length - 1; index >= 0; index--) {
-      if (backgroundJobs[index].status === "Done") {
-        backgroundJobs.splice(index, 1);
-      }
-    }
-
+    removeDoneBackgroundJobs();
     rl.prompt();
     return;
   }
@@ -718,7 +759,7 @@ rl.on("line", (input: string) => {
       }
     }
 
-    rl.prompt();
+    promptWithReap();
     return;
   }
 
@@ -733,7 +774,7 @@ rl.on("line", (input: string) => {
 
       createRedirectFile(stdoutTarget);
       createRedirectFile(stderrTarget);
-      rl.prompt();
+      promptWithReap();
       return;
     }
 
@@ -759,7 +800,7 @@ rl.on("line", (input: string) => {
         );
       }
 
-      rl.prompt();
+      promptWithReap();
       return;
     }
 
@@ -772,13 +813,13 @@ rl.on("line", (input: string) => {
 
       createRedirectFile(stdoutTarget);
       createRedirectFile(stderrTarget);
-      rl.prompt();
+      promptWithReap();
       return;
     }
 
     createRedirectFile(stdoutTarget);
     createRedirectFile(stderrTarget);
-    rl.prompt();
+    promptWithReap();
     return;
   }
 
@@ -811,8 +852,7 @@ rl.on("line", (input: string) => {
       };
 
       backgroundJobs.push(backgroundJob);
-      process.stdout.write(`[${jobNumber}] ${backgroundJob.pid}
-`);
+      process.stdout.write(`[${jobNumber}] ${backgroundJob.pid}\n`);
 
       child.on("exit", (code) => {
         if (code !== null) {
@@ -831,7 +871,7 @@ rl.on("line", (input: string) => {
       });
 
       child.unref();
-      rl.prompt();
+      promptWithReap();
       return;
     }
 
@@ -850,7 +890,7 @@ rl.on("line", (input: string) => {
       }
     }
 
-    rl.prompt();
+    promptWithReap();
     return;
   }
 
@@ -860,5 +900,5 @@ rl.on("line", (input: string) => {
     stderrTarget,
     process.stderr,
   );
-  rl.prompt();
+  promptWithReap();
 });
