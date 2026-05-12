@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "fs";
 import * as path from "path";
-import { spawn, spawnSync } from "child_process";
+import { ChildProcess, spawn, spawnSync } from "child_process";
 
 const builtins = new Set(["echo", "exit", "type", "pwd", "cd", "complete", "jobs"]);
 const autocompleteBuiltins = ["echo", "exit"];
@@ -20,7 +20,8 @@ type BackgroundJob = {
   jobNumber: number;
   pid: number;
   command: string;
-  status: "Running";
+  status: "Running" | "Done";
+  process: ChildProcess;
 };
 
 type ShellToken = {
@@ -551,6 +552,19 @@ function findExecutable(command: string): string | null {
   return null;
 }
 
+function refreshBackgroundJobStatuses(): void {
+  for (const job of backgroundJobs) {
+    if (job.status === "Done") {
+      continue;
+    }
+
+    if (job.process.exitCode !== null) {
+      job.status = "Done";
+    }
+  }
+}
+
+
 const rl = createInterface({
   input: process.stdin,
   output: process.stdout,
@@ -641,6 +655,7 @@ rl.on("line", (input: string) => {
 
   if (command === "jobs") {
     createRedirectFile(stderrTarget);
+    refreshBackgroundJobStatuses();
 
     const currentJobNumber = backgroundJobs[backgroundJobs.length - 1]?.jobNumber;
     const previousJobNumber = backgroundJobs[backgroundJobs.length - 2]?.jobNumber;
@@ -653,12 +668,21 @@ rl.on("line", (input: string) => {
             ? "-"
             : " ";
       const statusField = job.status.padEnd(24, " ");
+      const commandToDisplay =
+        job.status === "Done" ? job.command.replace(/\s*&\s*$/, "") : job.command;
 
       writeToRedirectOrStream(
-        `[${job.jobNumber}]${marker}  ${statusField}${job.command}\n`,
+        `[${job.jobNumber}]${marker}  ${statusField}${commandToDisplay}
+`,
         stdoutTarget,
         process.stdout,
       );
+    }
+
+    for (let index = backgroundJobs.length - 1; index >= 0; index--) {
+      if (backgroundJobs[index].status === "Done") {
+        backgroundJobs.splice(index, 1);
+      }
     }
 
     rl.prompt();
@@ -783,10 +807,18 @@ rl.on("line", (input: string) => {
         pid: child.pid ?? 0,
         command: input.trim(),
         status: "Running",
+        process: child,
       };
 
       backgroundJobs.push(backgroundJob);
-      process.stdout.write(`[${jobNumber}] ${backgroundJob.pid}\n`);
+      process.stdout.write(`[${jobNumber}] ${backgroundJob.pid}
+`);
+
+      child.on("exit", (code) => {
+        if (code !== null) {
+          backgroundJob.status = "Done";
+        }
+      });
 
       child.on("close", () => {
         if (typeof stdoutFd === "number") {
