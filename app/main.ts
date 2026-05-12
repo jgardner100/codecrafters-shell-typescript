@@ -41,7 +41,6 @@ type ParsedCommand = {
 };
 
 let lastTabCompletionLine: string | null = null;
-let nextBackgroundJobNumber = 1;
 const backgroundJobs: BackgroundJob[] = [];
 
 function getExecutableMatches(prefix: string): string[] {
@@ -591,10 +590,28 @@ function removeDoneBackgroundJobs(): void {
   }
 }
 
+function getNextAvailableJobNumber(): number {
+  const usedJobNumbers = new Set(
+    backgroundJobs.map((job) => job.jobNumber),
+  );
+
+  let jobNumber = 1;
+
+  while (usedJobNumbers.has(jobNumber)) {
+    jobNumber++;
+  }
+
+  return jobNumber;
+}
+
+function getJobsByJobNumber(): BackgroundJob[] {
+  return [...backgroundJobs].sort((a, b) => a.jobNumber - b.jobNumber);
+}
+
 function reapDoneJobs(outputTarget: RedirectTarget | null = null): void {
   refreshBackgroundJobStatuses();
 
-  for (const job of backgroundJobs) {
+  for (const job of getJobsByJobNumber()) {
     if (job.status !== "Done") {
       continue;
     }
@@ -710,7 +727,7 @@ rl.on("line", (input: string) => {
 
     refreshBackgroundJobStatuses();
 
-    for (const job of backgroundJobs) {
+    for (const job of getJobsByJobNumber()) {
       const marker = getJobMarker(job, backgroundJobs);
       const statusField = job.status.padEnd(24, " ");
       const displayedCommand =
@@ -842,7 +859,7 @@ rl.on("line", (input: string) => {
         argv0: command,
       });
 
-      const jobNumber = nextBackgroundJobNumber++;
+      const jobNumber = getNextAvailableJobNumber();
       const backgroundJob: BackgroundJob = {
         jobNumber,
         pid: child.pid ?? 0,
