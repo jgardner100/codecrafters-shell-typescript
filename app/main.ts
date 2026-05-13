@@ -551,6 +551,197 @@ function findExecutable(command: string): string | null {
   return null;
 }
 
+function splitPipeline(input: string): [string, string] | null {
+  let inSingleQuotes = false;
+  let inDoubleQuotes = false;
+
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i];
+
+    if (char === "\\" && !inSingleQuotes && !inDoubleQuotes) {
+      i++;
+      continue;
+    }
+
+    if (char === "\\" && inDoubleQuotes) {
+      const nextChar = input[i + 1];
+
+      if (nextChar === `"` || nextChar === "\\") {
+        i++;
+      }
+
+      continue;
+    }
+
+    if (char === "'" && !inDoubleQuotes) {
+      inSingleQuotes = !inSingleQuotes;
+      continue;
+    }
+
+    if (char === `"` && !inSingleQuotes) {
+      inDoubleQuotes = !inDoubleQuotes;
+      continue;
+    }
+
+    if (char === "|" && !inSingleQuotes && !inDoubleQuotes) {
+      const left = input.slice(0, i).trim();
+      const right = input.slice(i + 1).trim();
+
+      if (left.length === 0 || right.length === 0) {
+        return null;
+      }
+
+      return [left, right];
+    }
+  }
+
+  return null;
+}
+
+function waitForProcess(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    child.once("exit", () => resolve());
+    child.once("error", () => resolve());
+  });
+}
+
+function closeFdIfNeeded(fd: number | "inherit" | "pipe"): void {
+  if (typeof fd === "number") {
+    closeSync(fd);
+  }
+}
+
+async function runPipeline(input: string): Promise<boolean> {
+  const pipeline = splitPipeline(input);
+
+  if (pipeline === null) {
+    return false;
+  }
+
+  const leftParsed = extractRedirections(parseCommandLine(pipeline[0]));
+  const rightParsed = extractRedirections(parseCommandLine(pipeline[1]));
+
+  const leftCommand = leftParsed.tokens[0]?.value;
+  const rightCommand = rightParsed.tokens[0]?.value;
+
+  if (leftCommand === undefined || rightCommand === undefined) {
+    createRedirectFile(leftParsed.stdoutTarget);
+    createRedirectFile(leftParsed.stderrTarget);
+    createRedirectFile(rightParsed.stdoutTarget);
+    createRedirectFile(rightParsed.stderrTarget);
+    return true;
+  }
+
+  const leftExecutablePath = findExecutable(leftCommand);
+
+  if (leftExecutablePath === null) {
+    writeToRedirectOrStream(
+      `${leftCommand}: command not found\n`,
+      leftParsed.stderrTarget,
+      process.stderr,
+    );
+    return true;
+  }
+
+  const rightExecutablePath = findExecutable(rightCommand);
+
+  if (rightExecutablePath === null) {
+    writeToRedirectOrStream(
+      `${rightCommand}: command not found\n`,
+      rightParsed.stderrTarget,
+      process.stderr,
+    );
+    return true;
+  }
+
+  const leftArgs = leftParsed.tokens.slice(1).map((token) => token.value);
+  const rightArgs = rightParsed.tokens.slice(1).map((token) => token.value);
+
+  const leftStderrFd =
+    leftParsed.stderrTarget !== null
+      ? openSync(leftParsed.stderrTarget.file, leftParsed.stderrTarget.append ? "a" : "w")
+      : "inherit";
+
+  const rightStdoutFd =
+    rightParsed.stdoutTarget !== null
+      ? openSync(rightParsed.stdoutTarget.file, rightParsed.stdoutTarget.append ? "a" : "w")
+      : "inherit";
+
+  const rightStderrFd =
+    rightParsed.stderrTarget !== null
+      ? openSync(rightParsed.stderrTarget.file, rightParsed.stderrTarget.append ? "a" : "w")
+      : "inherit";
+
+  let leftExited = false;
+  let killTimer: NodeJS.Timeout | null = null;
+
+  try {
+    const leftProcess = spawn(leftExecutablePath, leftArgs, {
+      stdio: ["inherit", "pipe", leftStderrFd],
+      argv0: leftCommand,
+    });
+
+    const rightProcess = spawn(rightExecutablePath, rightArgs, {
+      stdio: ["pipe", rightStdoutFd, rightStderrFd],
+      argv0: rightCommand,
+    });
+
+    leftProcess.once("exit", () => {
+      leftExited = true;
+    });
+
+    leftProcess.stdout?.on("error", () => {
+      // The downstream command may close the pipe early, e.g. `head -n 5`.
+    });
+
+    rightProcess.stdin?.on("error", () => {
+      // Ignore EPIPE-style errors when the downstream command exits first.
+    });
+
+    if (leftProcess.stdout !== null && rightProcess.stdin !== null) {
+      leftProcess.stdout.pipe(rightProcess.stdin);
+    }
+
+    rightProcess.once("exit", () => {
+      if (leftProcess.stdout !== null && rightProcess.stdin !== null) {
+        leftProcess.stdout.unpipe(rightProcess.stdin);
+        leftProcess.stdout.destroy();
+      }
+
+      // Required for commands like `tail -f file | head -n 5`: once `head`
+      // has enough input and exits, the upstream `tail -f` must be stopped.
+      if (!leftExited) {
+        leftProcess.kill("SIGTERM");
+
+        killTimer = setTimeout(() => {
+          if (!leftExited) {
+            leftProcess.kill("SIGKILL");
+          }
+        }, 250);
+
+        killTimer.unref();
+      }
+    });
+
+    await waitForProcess(rightProcess);
+    await waitForProcess(leftProcess);
+  } finally {
+    if (killTimer !== null) {
+      clearTimeout(killTimer);
+    }
+
+    closeFdIfNeeded(leftStderrFd);
+    closeFdIfNeeded(rightStdoutFd);
+    closeFdIfNeeded(rightStderrFd);
+  }
+
+  return true;
+}
+
 function refreshBackgroundJobStatuses(): void {
   for (const job of backgroundJobs) {
     if (job.status === "Done") {
@@ -643,7 +834,14 @@ const rl = createInterface({
 
 promptWithReap();
 
-rl.on("line", (input: string) => {
+rl.on("line", async (input: string) => {
+  const handledAsPipeline = await runPipeline(input);
+
+  if (handledAsPipeline) {
+    promptWithReap();
+    return;
+  }
+
   const rawTokens = parseCommandLine(input);
   const parsed = extractRedirections(rawTokens);
 
