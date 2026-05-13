@@ -43,6 +43,7 @@ type ParsedCommand = {
 
 let lastTabCompletionLine: string | null = null;
 const backgroundJobs: BackgroundJob[] = [];
+const commandHistory: string[] = [];
 
 function getExecutableMatches(prefix: string): string[] {
   const matches = new Set<string>();
@@ -642,6 +643,12 @@ type PipelineBuiltinResult = {
   stderr: string;
 };
 
+function formatHistoryOutput(): string {
+  return commandHistory
+    .map((command, index) => `${String(index + 1).padStart(5, " ")}  ${command}\n`)
+    .join("");
+}
+
 function getTypeOutput(commandToCheck: string): string {
   if (builtins.has(commandToCheck)) {
     return `${commandToCheck} is a shell builtin\n`;
@@ -679,6 +686,13 @@ function runBuiltinForPipeline(
   if (command === "type") {
     return {
       stdout: getTypeOutput(args[0] ?? ""),
+      stderr: "",
+    };
+  }
+
+  if (command === "history") {
+    return {
+      stdout: formatHistoryOutput(),
       stderr: "",
     };
   }
@@ -1057,6 +1071,12 @@ const rl = createInterface({
 promptWithReap();
 
 async function handleLine(input: string): Promise<void> {
+  const commandLine = input.trim();
+
+  if (commandLine.length > 0) {
+    commandHistory.push(commandLine);
+  }
+
   const handledAsPipeline = await runPipeline(input);
 
   if (handledAsPipeline) {
@@ -1138,6 +1158,13 @@ async function handleLine(input: string): Promise<void> {
       );
     }
 
+    promptWithReap();
+    return;
+  }
+
+  if (command === "history") {
+    createRedirectFile(stderrTarget);
+    writeToRedirectOrStream(formatHistoryOutput(), stdoutTarget, process.stdout);
     promptWithReap();
     return;
   }
