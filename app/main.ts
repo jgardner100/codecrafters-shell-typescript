@@ -10,6 +10,7 @@ import {
 } from "fs";
 import * as path from "path";
 import { ChildProcess, spawn, spawnSync } from "child_process";
+import { PassThrough, Readable } from "stream";
 
 const builtins = new Set(["echo", "exit", "type", "pwd", "cd", "complete", "jobs"]);
 const autocompleteBuiltins = ["echo", "exit"];
@@ -551,7 +552,10 @@ function findExecutable(command: string): string | null {
   return null;
 }
 
-function splitPipeline(input: string): [string, string] | null {
+function splitPipeline(input: string): string[] | null {
+  const segments: string[] = [];
+  let segmentStart = 0;
+  let sawPipe = false;
   let inSingleQuotes = false;
   let inDoubleQuotes = false;
 
@@ -584,18 +588,30 @@ function splitPipeline(input: string): [string, string] | null {
     }
 
     if (char === "|" && !inSingleQuotes && !inDoubleQuotes) {
-      const left = input.slice(0, i).trim();
-      const right = input.slice(i + 1).trim();
+      sawPipe = true;
+      const segment = input.slice(segmentStart, i).trim();
 
-      if (left.length === 0 || right.length === 0) {
+      if (segment.length === 0) {
         return null;
       }
 
-      return [left, right];
+      segments.push(segment);
+      segmentStart = i + 1;
     }
   }
 
-  return null;
+  if (!sawPipe) {
+    return null;
+  }
+
+  const finalSegment = input.slice(segmentStart).trim();
+
+  if (finalSegment.length === 0) {
+    return null;
+  }
+
+  segments.push(finalSegment);
+  return segments;
 }
 
 function waitForProcess(child: ChildProcess): Promise<void> {
@@ -615,6 +631,159 @@ function closeFdIfNeeded(fd: number | "inherit" | "pipe"): void {
   }
 }
 
+type PipelineProcess = {
+  index: number;
+  child: ChildProcess;
+  exited: boolean;
+};
+
+type PipelineBuiltinResult = {
+  stdout: string;
+  stderr: string;
+};
+
+function getTypeOutput(commandToCheck: string): string {
+  if (builtins.has(commandToCheck)) {
+    return `${commandToCheck} is a shell builtin\n`;
+  }
+
+  const executablePath = findExecutable(commandToCheck);
+
+  if (executablePath !== null) {
+    return `${commandToCheck} is ${executablePath}\n`;
+  }
+
+  return `${commandToCheck}: not found\n`;
+}
+
+function runBuiltinForPipeline(
+  command: string,
+  argTokens: ShellToken[],
+): PipelineBuiltinResult {
+  const args = argTokens.map((token) => token.value);
+
+  if (command === "echo") {
+    return {
+      stdout: `${args.join(" ")}\n`,
+      stderr: "",
+    };
+  }
+
+  if (command === "pwd") {
+    return {
+      stdout: `${process.cwd()}\n`,
+      stderr: "",
+    };
+  }
+
+  if (command === "type") {
+    return {
+      stdout: getTypeOutput(args[0] ?? ""),
+      stderr: "",
+    };
+  }
+
+  if (command === "jobs") {
+    refreshBackgroundJobStatuses();
+
+    const stdout = getJobsByJobNumber()
+      .map((job) => {
+        const marker = getJobMarker(job, backgroundJobs);
+        const statusField = job.status.padEnd(24, " ");
+        const displayedCommand =
+          job.status === "Done"
+            ? removeTrailingBackgroundMarker(job.command)
+            : job.command;
+
+        return `[${job.jobNumber}]${marker}  ${statusField}${displayedCommand}\n`;
+      })
+      .join("");
+
+    removeDoneBackgroundJobs();
+
+    return {
+      stdout,
+      stderr: "",
+    };
+  }
+
+  if (command === "cd") {
+    const originalDirectory = argTokens[0]?.value;
+    let directory = originalDirectory;
+
+    if (directory === "~" && !argTokens[0]?.quoted) {
+      directory = process.env.HOME ?? "";
+    }
+
+    try {
+      statSync(directory ?? "");
+      return {
+        stdout: "",
+        stderr: "",
+      };
+    } catch {
+      return {
+        stdout: "",
+        stderr: `cd: ${originalDirectory}: No such file or directory\n`,
+      };
+    }
+  }
+
+  if (command === "complete") {
+    if (args[0] === "-p") {
+      const commandName = args[1] ?? "";
+      const completerPath = completionSpecs.get(commandName);
+
+      if (completerPath !== undefined) {
+        return {
+          stdout: `complete -C '${completerPath}' ${commandName}\n`,
+          stderr: "",
+        };
+      }
+
+      return {
+        stdout: "",
+        stderr: `complete: ${commandName}: no completion specification\n`,
+      };
+    }
+
+    return {
+      stdout: "",
+      stderr: "",
+    };
+  }
+
+  // `exit` in a pipeline behaves like it ran in a pipeline child context here:
+  // it should not terminate the interactive shell process.
+  return {
+    stdout: "",
+    stderr: "",
+  };
+}
+
+function createReadableFromText(text: string): Readable {
+  const stream = new PassThrough();
+  stream.end(text);
+  return stream;
+}
+
+function pipeInputToChild(input: Readable, child: ChildProcess): void {
+  if (child.stdin === null) {
+    input.destroy();
+    return;
+  }
+
+  input.on("error", () => {
+    // The consumer may close early, for example `tail -f file | head -n 5`.
+  });
+
+  child.stdin.on("error", () => {
+    // Ignore EPIPE-style errors when a downstream command exits first.
+  });
+
+  input.pipe(child.stdin);
+}
+
 async function runPipeline(input: string): Promise<boolean> {
   const pipeline = splitPipeline(input);
 
@@ -622,121 +791,174 @@ async function runPipeline(input: string): Promise<boolean> {
     return false;
   }
 
-  const leftParsed = extractRedirections(parseCommandLine(pipeline[0]));
-  const rightParsed = extractRedirections(parseCommandLine(pipeline[1]));
+  const parsedCommands = pipeline.map((segment) =>
+    extractRedirections(parseCommandLine(segment)),
+  );
 
-  const leftCommand = leftParsed.tokens[0]?.value;
-  const rightCommand = rightParsed.tokens[0]?.value;
+  const processes: PipelineProcess[] = [];
+  const waitPromises: Promise<void>[] = [];
+  const openedFds: Array<number | "inherit" | "pipe"> = [];
+  const killTimers: ReturnType<typeof setTimeout>[] = [];
 
-  if (leftCommand === undefined || rightCommand === undefined) {
-    createRedirectFile(leftParsed.stdoutTarget);
-    createRedirectFile(leftParsed.stderrTarget);
-    createRedirectFile(rightParsed.stdoutTarget);
-    createRedirectFile(rightParsed.stderrTarget);
-    return true;
-  }
+  let previousOutput: Readable | null = null;
 
-  const leftExecutablePath = findExecutable(leftCommand);
+  const stopProcessesBefore = (index: number): void => {
+    for (const processInfo of processes) {
+      if (processInfo.index >= index || processInfo.exited) {
+        continue;
+      }
 
-  if (leftExecutablePath === null) {
-    writeToRedirectOrStream(
-      `${leftCommand}: command not found\n`,
-      leftParsed.stderrTarget,
-      process.stderr,
-    );
-    return true;
-  }
+      processInfo.child.kill("SIGTERM");
 
-  const rightExecutablePath = findExecutable(rightCommand);
+      const killTimer = setTimeout(() => {
+        if (!processInfo.exited) {
+          processInfo.child.kill("SIGKILL");
+        }
+      }, 250);
 
-  if (rightExecutablePath === null) {
-    writeToRedirectOrStream(
-      `${rightCommand}: command not found\n`,
-      rightParsed.stderrTarget,
-      process.stderr,
-    );
-    return true;
-  }
-
-  const leftArgs = leftParsed.tokens.slice(1).map((token) => token.value);
-  const rightArgs = rightParsed.tokens.slice(1).map((token) => token.value);
-
-  const leftStderrFd =
-    leftParsed.stderrTarget !== null
-      ? openSync(leftParsed.stderrTarget.file, leftParsed.stderrTarget.append ? "a" : "w")
-      : "inherit";
-
-  const rightStdoutFd =
-    rightParsed.stdoutTarget !== null
-      ? openSync(rightParsed.stdoutTarget.file, rightParsed.stdoutTarget.append ? "a" : "w")
-      : "inherit";
-
-  const rightStderrFd =
-    rightParsed.stderrTarget !== null
-      ? openSync(rightParsed.stderrTarget.file, rightParsed.stderrTarget.append ? "a" : "w")
-      : "inherit";
-
-  let leftExited = false;
-  let killTimer: NodeJS.Timeout | null = null;
+      killTimer.unref();
+      killTimers.push(killTimer);
+    }
+  };
 
   try {
-    const leftProcess = spawn(leftExecutablePath, leftArgs, {
-      stdio: ["inherit", "pipe", leftStderrFd],
-      argv0: leftCommand,
-    });
+    for (let index = 0; index < parsedCommands.length; index++) {
+      const parsed = parsedCommands[index];
+      const command = parsed.tokens[0]?.value;
+      const argTokens = parsed.tokens.slice(1);
+      const isLast = index === parsedCommands.length - 1;
 
-    const rightProcess = spawn(rightExecutablePath, rightArgs, {
-      stdio: ["pipe", rightStdoutFd, rightStderrFd],
-      argv0: rightCommand,
-    });
+      if (command === undefined) {
+        createRedirectFile(parsed.stdoutTarget);
+        createRedirectFile(parsed.stderrTarget);
 
-    leftProcess.once("exit", () => {
-      leftExited = true;
-    });
+        if (previousOutput !== null) {
+          previousOutput.destroy();
+          stopProcessesBefore(index);
+          previousOutput = null;
+        }
 
-    leftProcess.stdout?.on("error", () => {
-      // The downstream command may close the pipe early, e.g. `head -n 5`.
-    });
+        previousOutput = isLast ? null : createReadableFromText("");
+        continue;
+      }
 
-    rightProcess.stdin?.on("error", () => {
-      // Ignore EPIPE-style errors when the downstream command exits first.
-    });
+      if (builtins.has(command)) {
+        if (previousOutput !== null) {
+          previousOutput.destroy();
+          stopProcessesBefore(index);
+          previousOutput = null;
+        }
 
-    if (leftProcess.stdout !== null && rightProcess.stdin !== null) {
-      leftProcess.stdout.pipe(rightProcess.stdin);
+        const result = runBuiltinForPipeline(command, argTokens);
+
+        writeToRedirectOrStream(result.stderr, parsed.stderrTarget, process.stderr);
+
+        if (parsed.stdoutTarget !== null || isLast) {
+          writeToRedirectOrStream(result.stdout, parsed.stdoutTarget, process.stdout);
+          previousOutput = null;
+        } else {
+          previousOutput = createReadableFromText(result.stdout);
+        }
+
+        continue;
+      }
+
+      const executablePath = findExecutable(command);
+
+      if (executablePath === null) {
+        if (previousOutput !== null) {
+          previousOutput.destroy();
+          stopProcessesBefore(index);
+          previousOutput = null;
+        }
+
+        writeToRedirectOrStream(
+          `${command}: command not found\n`,
+          parsed.stderrTarget,
+          process.stderr,
+        );
+
+        previousOutput = isLast ? null : createReadableFromText("");
+        continue;
+      }
+
+      const args = argTokens.map((token) => token.value);
+
+      const stderrFd =
+        parsed.stderrTarget !== null
+          ? openSync(parsed.stderrTarget.file, parsed.stderrTarget.append ? "a" : "w")
+          : "inherit";
+
+      openedFds.push(stderrFd);
+
+      const stdoutFd =
+        isLast && parsed.stdoutTarget !== null
+          ? openSync(parsed.stdoutTarget.file, parsed.stdoutTarget.append ? "a" : "w")
+          : null;
+
+      if (stdoutFd !== null) {
+        openedFds.push(stdoutFd);
+      }
+
+      const inputForChild: Readable | null = previousOutput;
+
+      const child: ChildProcess = spawn(executablePath, args, {
+        stdio: [
+          inputForChild === null ? "inherit" : "pipe",
+          isLast ? stdoutFd ?? "inherit" : "pipe",
+          stderrFd,
+        ],
+        argv0: command,
+      });
+
+      const processInfo: PipelineProcess = {
+        index,
+        child,
+        exited: false,
+      };
+
+      processes.push(processInfo);
+
+      child.once("exit", () => {
+        processInfo.exited = true;
+
+        if (inputForChild !== null) {
+          inputForChild.destroy();
+        }
+
+        // If this command stops consuming input before an upstream command exits
+        // (for example `tail -f file | head -n 5`), stop upstream commands too.
+        stopProcessesBefore(index);
+      });
+
+      if (child.stdout !== null) {
+        child.stdout.on("error", () => {
+          // Downstream may close early.
+        });
+      }
+
+      waitPromises.push(waitForProcess(child));
+
+      if (inputForChild !== null) {
+        pipeInputToChild(inputForChild, child);
+      }
+
+      previousOutput = isLast ? null : child.stdout ?? createReadableFromText("");
     }
 
-    rightProcess.once("exit", () => {
-      if (leftProcess.stdout !== null && rightProcess.stdin !== null) {
-        leftProcess.stdout.unpipe(rightProcess.stdin);
-        leftProcess.stdout.destroy();
-      }
-
-      // Required for commands like `tail -f file | head -n 5`: once `head`
-      // has enough input and exits, the upstream `tail -f` must be stopped.
-      if (!leftExited) {
-        leftProcess.kill("SIGTERM");
-
-        killTimer = setTimeout(() => {
-          if (!leftExited) {
-            leftProcess.kill("SIGKILL");
-          }
-        }, 250);
-
-        killTimer.unref();
-      }
-    });
-
-    await waitForProcess(rightProcess);
-    await waitForProcess(leftProcess);
+    await Promise.all(waitPromises);
   } finally {
-    if (killTimer !== null) {
+    if (previousOutput !== null) {
+      previousOutput.destroy();
+    }
+
+    for (const killTimer of killTimers) {
       clearTimeout(killTimer);
     }
 
-    closeFdIfNeeded(leftStderrFd);
-    closeFdIfNeeded(rightStdoutFd);
-    closeFdIfNeeded(rightStderrFd);
+    for (const fd of openedFds) {
+      closeFdIfNeeded(fd);
+    }
   }
 
   return true;
@@ -834,7 +1056,7 @@ const rl = createInterface({
 
 promptWithReap();
 
-rl.on("line", async (input: string) => {
+async function handleLine(input: string): Promise<void> {
   const handledAsPipeline = await runPipeline(input);
 
   if (handledAsPipeline) {
@@ -1116,4 +1338,15 @@ rl.on("line", async (input: string) => {
     process.stderr,
   );
   promptWithReap();
+}
+
+let inputQueue = Promise.resolve();
+
+rl.on("line", (input: string) => {
+  inputQueue = inputQueue
+    .then(() => handleLine(input))
+    .catch((error) => {
+      console.error(error);
+      promptWithReap();
+    });
 });
