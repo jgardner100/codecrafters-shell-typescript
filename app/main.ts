@@ -13,7 +13,7 @@ import * as path from "path";
 import { ChildProcess, spawn, spawnSync } from "child_process";
 import { PassThrough, Readable } from "stream";
 
-const builtins = new Set(["echo", "exit", "type", "pwd", "cd", "complete", "jobs", "history"]);
+const builtins = new Set(["echo", "exit", "type", "pwd", "cd", "complete", "jobs", "history", "declare"]);
 const autocompleteBuiltins = ["echo", "exit"];
 
 const completionSpecs = new Map<string, string>();
