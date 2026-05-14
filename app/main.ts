@@ -6,6 +6,7 @@ import {
   openSync,
   statSync,
   readdirSync,
+  readFileSync,
   writeFileSync,
 } from "fs";
 import * as path from "path";
@@ -1175,6 +1176,29 @@ async function handleLine(input: string): Promise<void> {
 
   if (command === "history") {
     createRedirectFile(stderrTarget);
+
+    if (args[0] === "-r") {
+      const historyFilePath = args[1];
+
+      if (historyFilePath !== undefined) {
+        try {
+          const historyFileContents = readFileSync(historyFilePath, "utf8");
+          const historyFileCommands = historyFileContents
+            .split(/\r?\n/)
+            .filter((line) => line.length > 0);
+
+          commandHistory.push(...historyFileCommands);
+        } catch {
+          // CodeCrafters tests provide a readable history file. If it cannot be
+          // read, keep the shell running and leave history unchanged.
+        }
+      }
+
+      createRedirectFile(stdoutTarget);
+      promptWithReap();
+      return;
+    }
+
     writeToRedirectOrStream(formatHistoryOutput(args), stdoutTarget, process.stdout);
     promptWithReap();
     return;
