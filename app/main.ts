@@ -640,6 +640,15 @@ function createRedirectFile(target: RedirectTarget | null): void {
 }
 
 function findExecutable(command: string): string | null {
+  if (command.includes(path.sep)) {
+    try {
+      accessSync(command, constants.X_OK);
+      return command;
+    } catch {
+      return null;
+    }
+  }
+
   const pathEnv = process.env.PATH ?? "";
   const directories = pathEnv.split(path.delimiter);
 
@@ -787,9 +796,63 @@ function isValidShellVariableName(name: string): boolean {
 }
 
 function expandShellVariablesInText(text: string): string {
-  return text.replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, variableName: string) => {
-    return shellVariables.get(variableName) ?? "";
-  });
+  let expanded = "";
+  let index = 0;
+
+  while (index < text.length) {
+    const char = text[index];
+
+    if (char !== "$" || index + 1 >= text.length) {
+      expanded += char;
+      index += 1;
+      continue;
+    }
+
+    const nextChar = text[index + 1];
+
+    if (nextChar === "{") {
+      const closingBraceIndex = text.indexOf("}", index + 2);
+
+      if (closingBraceIndex === -1) {
+        expanded += char;
+        index += 1;
+        continue;
+      }
+
+      const variableName = text.slice(index + 2, closingBraceIndex);
+
+      if (!isValidShellVariableName(variableName)) {
+        expanded += text.slice(index, closingBraceIndex + 1);
+        index = closingBraceIndex + 1;
+        continue;
+      }
+
+      expanded += shellVariables.get(variableName) ?? "";
+      index = closingBraceIndex + 1;
+      continue;
+    }
+
+    if (!/[A-Za-z_]/.test(nextChar)) {
+      expanded += char;
+      index += 1;
+      continue;
+    }
+
+    let variableEndIndex = index + 2;
+
+    while (
+      variableEndIndex < text.length &&
+      /[A-Za-z0-9_]/.test(text[variableEndIndex])
+    ) {
+      variableEndIndex += 1;
+    }
+
+    const variableName = text.slice(index + 1, variableEndIndex);
+    expanded += shellVariables.get(variableName) ?? "";
+    index = variableEndIndex;
+  }
+
+  return expanded;
 }
 
 function expandShellVariablesInToken(token: ShellToken): string {
