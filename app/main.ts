@@ -46,6 +46,22 @@ let lastTabCompletionLine: string | null = null;
 const backgroundJobs: BackgroundJob[] = [];
 const commandHistory: string[] = [];
 let lastAppendedHistoryIndex = 0;
+let historySavedOnExit = false;
+
+function saveHistoryToHistfile(): void {
+  const historyFilePath = process.env.HISTFILE;
+
+  if (!historyFilePath || historySavedOnExit) {
+    return;
+  }
+
+  try {
+    writeFileSync(historyFilePath, `${commandHistory.join("\n")}\n`);
+    historySavedOnExit = true;
+  } catch {
+    // No output. Shell should exit normally even if history cannot be saved.
+  }
+}
 
 function readHistoryFile(historyFilePath: string): void {
   const contents = readFileSync(historyFilePath, "utf8");
@@ -1203,6 +1219,7 @@ async function handleLine(input: string): Promise<void> {
   const args = argTokens.map((token) => token.value);
 
   if (command === "exit") {
+    saveHistoryToHistfile();
     rl.close();
     process.exit(0);
   }
@@ -1452,6 +1469,7 @@ async function handleLine(input: string): Promise<void> {
       process.stdout.write(`[${jobNumber}] ${backgroundJob.pid}\n`);
 
       child.on("exit", (code) => {
+        saveHistoryToHistfile();
         if (code !== null) {
           backgroundJob.status = "Done";
         }
