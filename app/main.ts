@@ -868,7 +868,13 @@ function expandShellVariablesInToken(token: ShellToken): string {
 }
 
 function expandShellVariablesInTokens(tokens: ShellToken[]): string[] {
-  return tokens.map(expandShellVariablesInToken);
+  return tokens
+    .map((token) => ({
+      token,
+      expanded: expandShellVariablesInToken(token),
+    }))
+    .filter(({ token, expanded }) => token.quoted || expanded.length > 0)
+    .map(({ expanded }) => expanded);
 }
 
 function runDeclare(args: string[]): PipelineBuiltinResult {
