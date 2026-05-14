@@ -17,6 +17,7 @@ const builtins = new Set(["echo", "exit", "type", "pwd", "cd", "complete", "jobs
 const autocompleteBuiltins = ["echo", "exit"];
 
 const completionSpecs = new Map<string, string>();
+const shellVariables = new Map<string, string>();
 
 type BackgroundJob = {
   jobNumber: number;
@@ -757,15 +758,41 @@ function getTypeOutput(commandToCheck: string): string {
   return `${commandToCheck}: not found\n`;
 }
 
+function escapeDeclareValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
 
-function getDeclareOutput(args: string[]): PipelineBuiltinResult {
+function runDeclare(args: string[]): PipelineBuiltinResult {
   if (args[0] === "-p") {
     const variableName = args[1] ?? "";
+    const value = shellVariables.get(variableName);
+
+    if (value === undefined) {
+      return {
+        stdout: "",
+        stderr: `declare: ${variableName}: not found\n`,
+      };
+    }
 
     return {
-      stdout: "",
-      stderr: `declare: ${variableName}: not found\n`,
+      stdout: `declare -- ${variableName}="${escapeDeclareValue(value)}"\n`,
+      stderr: "",
     };
+  }
+
+  for (const arg of args) {
+    const equalsIndex = arg.indexOf("=");
+
+    if (equalsIndex === -1) {
+      continue;
+    }
+
+    const variableName = arg.slice(0, equalsIndex);
+    const value = arg.slice(equalsIndex + 1);
+
+    if (variableName.length > 0) {
+      shellVariables.set(variableName, value);
+    }
   }
 
   return {
@@ -809,7 +836,7 @@ function runBuiltinForPipeline(
   }
 
   if (command === "declare") {
-    return getDeclareOutput(args);
+    return runDeclare(args);
   }
 
   if (command === "jobs") {
@@ -1284,17 +1311,6 @@ async function handleLine(input: string): Promise<void> {
     return;
   }
 
-  if (command === "declare") {
-    createRedirectFile(stdoutTarget);
-
-    const result = getDeclareOutput(args);
-    writeToRedirectOrStream(result.stdout, stdoutTarget, process.stdout);
-    writeToRedirectOrStream(result.stderr, stderrTarget, process.stderr);
-
-    promptWithReap();
-    return;
-  }
-
   if (command === "history") {
     createRedirectFile(stderrTarget);
 
@@ -1404,6 +1420,16 @@ async function handleLine(input: string): Promise<void> {
         );
       }
     }
+
+    promptWithReap();
+    return;
+  }
+
+  if (command === "declare") {
+    const result = runDeclare(args);
+
+    writeToRedirectOrStream(result.stdout, stdoutTarget, process.stdout);
+    writeToRedirectOrStream(result.stderr, stderrTarget, process.stderr);
 
     promptWithReap();
     return;
