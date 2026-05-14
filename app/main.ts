@@ -643,9 +643,20 @@ type PipelineBuiltinResult = {
   stderr: string;
 };
 
-function formatHistoryOutput(): string {
+function formatHistoryOutput(args: string[] = []): string {
+  const requestedLimit = args[0];
+  const hasLimit = requestedLimit !== undefined && /^\d+$/.test(requestedLimit);
+
+  const startIndex = hasLimit
+    ? Math.max(commandHistory.length - Number(requestedLimit), 0)
+    : 0;
+
   return commandHistory
-    .map((command, index) => `${String(index + 1).padStart(5, " ")}  ${command}\n`)
+    .slice(startIndex)
+    .map((command, offset) => {
+      const historyNumber = startIndex + offset + 1;
+      return `${String(historyNumber).padStart(5, " ")}  ${command}\n`;
+    })
     .join("");
 }
 
@@ -692,7 +703,7 @@ function runBuiltinForPipeline(
 
   if (command === "history") {
     return {
-      stdout: formatHistoryOutput(),
+      stdout: formatHistoryOutput(args),
       stderr: "",
     };
   }
@@ -1164,7 +1175,7 @@ async function handleLine(input: string): Promise<void> {
 
   if (command === "history") {
     createRedirectFile(stderrTarget);
-    writeToRedirectOrStream(formatHistoryOutput(), stdoutTarget, process.stdout);
+    writeToRedirectOrStream(formatHistoryOutput(args), stdoutTarget, process.stdout);
     promptWithReap();
     return;
   }
