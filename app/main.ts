@@ -27,9 +27,15 @@ type BackgroundJob = {
   process: ChildProcess;
 };
 
+type TokenPart = {
+  value: string;
+  expandVariables: boolean;
+};
+
 type ShellToken = {
   value: string;
   quoted: boolean;
+  parts?: TokenPart[];
 };
 
 type RedirectTarget = {
@@ -413,23 +419,49 @@ function parseCommandLine(input: string): ShellToken[] {
   const tokens: ShellToken[] = [];
 
   let current = "";
+  let currentParts: TokenPart[] = [];
   let inSingleQuotes = false;
   let inDoubleQuotes = false;
   let currentWasQuoted = false;
   let buildingToken = false;
+
+  const appendToCurrent = (text: string, expandVariables: boolean): void => {
+    current += text;
+
+    const previousPart = currentParts[currentParts.length - 1];
+    if (previousPart !== undefined && previousPart.expandVariables === expandVariables) {
+      previousPart.value += text;
+    } else {
+      currentParts.push({ value: text, expandVariables });
+    }
+
+    buildingToken = true;
+  };
+
+  const pushCurrentToken = (): void => {
+    tokens.push({
+      value: current,
+      quoted: currentWasQuoted,
+      parts: currentParts,
+    });
+
+    current = "";
+    currentParts = [];
+    currentWasQuoted = false;
+    buildingToken = false;
+  };
 
   for (let i = 0; i < input.length; i++) {
     const char = input[i];
 
     if (char === "\\" && !inSingleQuotes && !inDoubleQuotes) {
       if (i + 1 < input.length) {
-        current += input[i + 1];
+        appendToCurrent(input[i + 1], false);
         i++;
       } else {
-        current += char;
+        appendToCurrent(char, false);
       }
 
-      buildingToken = true;
       currentWasQuoted = true;
       continue;
     }
@@ -437,14 +469,13 @@ function parseCommandLine(input: string): ShellToken[] {
     if (char === "\\" && inDoubleQuotes) {
       const nextChar = input[i + 1];
 
-      if (nextChar === `"` || nextChar === "\\") {
-        current += nextChar;
+      if (nextChar === `"` || nextChar === "\\" || nextChar === "$") {
+        appendToCurrent(nextChar, false);
         i++;
       } else {
-        current += char;
+        appendToCurrent(char, true);
       }
 
-      buildingToken = true;
       currentWasQuoted = true;
       continue;
     }
@@ -465,28 +496,17 @@ function parseCommandLine(input: string): ShellToken[] {
 
     if (!inSingleQuotes && !inDoubleQuotes && /\s/.test(char)) {
       if (buildingToken) {
-        tokens.push({
-          value: current,
-          quoted: currentWasQuoted,
-        });
-
-        current = "";
-        currentWasQuoted = false;
-        buildingToken = false;
+        pushCurrentToken();
       }
 
       continue;
     }
 
-    current += char;
-    buildingToken = true;
+    appendToCurrent(char, !inSingleQuotes);
   }
 
   if (buildingToken) {
-    tokens.push({
-      value: current,
-      quoted: currentWasQuoted,
-    });
+    pushCurrentToken();
   }
 
   return tokens;
@@ -766,6 +786,28 @@ function isValidShellVariableName(name: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
 }
 
+function expandShellVariablesInText(text: string): string {
+  return text.replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, variableName: string) => {
+    return shellVariables.get(variableName) ?? "";
+  });
+}
+
+function expandShellVariablesInToken(token: ShellToken): string {
+  if (token.parts === undefined) {
+    return expandShellVariablesInText(token.value);
+  }
+
+  return token.parts
+    .map((part) =>
+      part.expandVariables ? expandShellVariablesInText(part.value) : part.value,
+    )
+    .join("");
+}
+
+function expandShellVariablesInTokens(tokens: ShellToken[]): string[] {
+  return tokens.map(expandShellVariablesInToken);
+}
+
 function runDeclare(args: string[]): PipelineBuiltinResult {
   if (args[0] === "-p") {
     const variableName = args[1] ?? "";
@@ -814,7 +856,7 @@ function runBuiltinForPipeline(
   command: string,
   argTokens: ShellToken[],
 ): PipelineBuiltinResult {
-  const args = argTokens.map((token) => token.value);
+  const args = expandShellVariablesInTokens(argTokens);
 
   if (command === "echo") {
     return {
@@ -873,10 +915,10 @@ function runBuiltinForPipeline(
   }
 
   if (command === "cd") {
-    const originalDirectory = argTokens[0]?.value;
+    const originalDirectory = args[0];
     let directory = originalDirectory;
 
-    if (directory === "~" && !argTokens[0]?.quoted) {
+    if (argTokens[0]?.value === "~" && !argTokens[0]?.quoted) {
       directory = process.env.HOME ?? "";
     }
 
@@ -989,7 +1031,8 @@ async function runPipeline(input: string): Promise<boolean> {
   try {
     for (let index = 0; index < parsedCommands.length; index++) {
       const parsed = parsedCommands[index];
-      const command = parsed.tokens[0]?.value;
+      const commandToken = parsed.tokens[0];
+      const command = commandToken === undefined ? undefined : expandShellVariablesInToken(commandToken);
       const argTokens = parsed.tokens.slice(1);
       const isLast = index === parsedCommands.length - 1;
 
@@ -1047,7 +1090,7 @@ async function runPipeline(input: string): Promise<boolean> {
         continue;
       }
 
-      const args = argTokens.map((token) => token.value);
+      const args = expandShellVariablesInTokens(argTokens);
 
       const stderrFd =
         parsed.stderrTarget !== null
@@ -1271,9 +1314,9 @@ async function handleLine(input: string): Promise<void> {
     return;
   }
 
-  const command = tokens[0].value;
+  const command = expandShellVariablesInToken(tokens[0]);
   const argTokens = tokens.slice(1);
-  const args = argTokens.map((token) => token.value);
+  const args = expandShellVariablesInTokens(argTokens);
 
   if (command === "exit") {
     saveHistoryToHistfile();
@@ -1298,10 +1341,10 @@ async function handleLine(input: string): Promise<void> {
   if (command === "cd") {
     createRedirectFile(stdoutTarget);
 
-    const originalDirectory = argTokens[0]?.value;
+    const originalDirectory = args[0];
     let directory = originalDirectory;
 
-    if (directory === "~" && !argTokens[0]?.quoted) {
+    if (argTokens[0]?.value === "~" && !argTokens[0]?.quoted) {
       directory = process.env.HOME ?? "";
     }
 
