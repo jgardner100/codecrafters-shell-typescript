@@ -45,7 +45,6 @@ type ParsedCommand = {
 let lastTabCompletionLine: string | null = null;
 const backgroundJobs: BackgroundJob[] = [];
 const commandHistory: string[] = [];
-let lastAppendedHistoryIndex = 0;
 
 function getExecutableMatches(prefix: string): string[] {
   const matches = new Set<string>();
@@ -662,22 +661,6 @@ function formatHistoryOutput(args: string[] = []): string {
     .join("");
 }
 
-function writeHistoryFile(historyFilePath: string): void {
-  writeFileSync(historyFilePath, `${commandHistory.join("\n")}\n`);
-  lastAppendedHistoryIndex = commandHistory.length;
-}
-
-function appendHistoryFile(historyFilePath: string): void {
-  const newHistoryCommands = commandHistory.slice(lastAppendedHistoryIndex);
-
-  if (newHistoryCommands.length === 0) {
-    return;
-  }
-
-  writeFileSync(historyFilePath, `${newHistoryCommands.join("\n")}\n`, { flag: "a" });
-  lastAppendedHistoryIndex = commandHistory.length;
-}
-
 function getTypeOutput(commandToCheck: string): string {
   if (builtins.has(commandToCheck)) {
     return `${commandToCheck} is a shell builtin\n`;
@@ -720,40 +703,6 @@ function runBuiltinForPipeline(
   }
 
   if (command === "history") {
-    if (args[0] === "-w") {
-      const historyFilePath = args[1];
-
-      if (historyFilePath !== undefined) {
-        try {
-          writeHistoryFile(historyFilePath);
-        } catch {
-          // Keep the shell running if the history file cannot be written.
-        }
-      }
-
-      return {
-        stdout: "",
-        stderr: "",
-      };
-    }
-
-    if (args[0] === "-a") {
-      const historyFilePath = args[1];
-
-      if (historyFilePath !== undefined) {
-        try {
-          appendHistoryFile(historyFilePath);
-        } catch {
-          // Keep the shell running if the history file cannot be appended.
-        }
-      }
-
-      return {
-        stdout: "",
-        stderr: "",
-      };
-    }
-
     return {
       stdout: formatHistoryOutput(args),
       stderr: "",
@@ -1242,40 +1191,6 @@ async function handleLine(input: string): Promise<void> {
         } catch {
           // CodeCrafters tests provide a readable history file. If it cannot be
           // read, keep the shell running and leave history unchanged.
-        }
-      }
-
-      createRedirectFile(stdoutTarget);
-      promptWithReap();
-      return;
-    }
-
-    if (args[0] === "-w") {
-      const historyFilePath = args[1];
-
-      if (historyFilePath !== undefined) {
-        try {
-          writeHistoryFile(historyFilePath);
-        } catch {
-          // CodeCrafters tests provide a writable path. If it cannot be written,
-          // keep the shell running without printing extra output.
-        }
-      }
-
-      createRedirectFile(stdoutTarget);
-      promptWithReap();
-      return;
-    }
-
-    if (args[0] === "-a") {
-      const historyFilePath = args[1];
-
-      if (historyFilePath !== undefined) {
-        try {
-          appendHistoryFile(historyFilePath);
-        } catch {
-          // CodeCrafters tests provide a writable path. If it cannot be appended,
-          // keep the shell running without printing extra output.
         }
       }
 
