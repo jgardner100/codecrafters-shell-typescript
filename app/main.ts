@@ -757,6 +757,23 @@ function getTypeOutput(commandToCheck: string): string {
   return `${commandToCheck}: not found\n`;
 }
 
+
+function getDeclareOutput(args: string[]): PipelineBuiltinResult {
+  if (args[0] === "-p") {
+    const variableName = args[1] ?? "";
+
+    return {
+      stdout: "",
+      stderr: `declare: ${variableName}: not found\n`,
+    };
+  }
+
+  return {
+    stdout: "",
+    stderr: "",
+  };
+}
+
 function runBuiltinForPipeline(
   command: string,
   argTokens: ShellToken[],
@@ -789,6 +806,10 @@ function runBuiltinForPipeline(
       stdout: formatHistoryOutput(args),
       stderr: "",
     };
+  }
+
+  if (command === "declare") {
+    return getDeclareOutput(args);
   }
 
   if (command === "jobs") {
@@ -1258,6 +1279,17 @@ async function handleLine(input: string): Promise<void> {
         process.stderr,
       );
     }
+
+    promptWithReap();
+    return;
+  }
+
+  if (command === "declare") {
+    createRedirectFile(stdoutTarget);
+
+    const result = getDeclareOutput(args);
+    writeToRedirectOrStream(result.stdout, stdoutTarget, process.stdout);
+    writeToRedirectOrStream(result.stderr, stderrTarget, process.stderr);
 
     promptWithReap();
     return;
