@@ -91,6 +91,27 @@ function writeHistoryFile(historyFilePath: string): void {
   lastAppendedHistoryIndex = commandHistory.length;
 }
 
+function hasProcessFinished(pid: number): boolean {
+  if (pid <= 0) {
+    return false;
+  }
+
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+
+    // /proc/<pid>/stat format:
+    // pid (comm) state ...
+    // state "Z" means zombie, i.e. exited but not reaped yet.
+    const match = stat.match(/\)\s+([A-Z])\s+/);
+    const state = match?.[1];
+
+    return state === "Z" || state === "X";
+  } catch {
+    // If /proc/<pid>/stat no longer exists, the process has gone.
+    return true;
+  }
+}
+
 function getExecutableMatches(prefix: string): string[] {
   const matches = new Set<string>();
   const pathEnv = process.env.PATH ?? "";
@@ -1041,7 +1062,11 @@ function refreshBackgroundJobStatuses(): void {
       continue;
     }
 
-    if (job.process.exitCode !== null) {
+    if (
+      job.process.exitCode !== null ||
+      job.process.signalCode !== null ||
+      hasProcessFinished(job.pid)
+    ) {
       job.status = "Done";
     }
   }
