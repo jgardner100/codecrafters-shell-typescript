@@ -762,6 +762,10 @@ function escapeDeclareValue(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+function isValidShellVariableName(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
 function runDeclare(args: string[]): PipelineBuiltinResult {
   if (args[0] === "-p") {
     const variableName = args[1] ?? "";
@@ -780,6 +784,8 @@ function runDeclare(args: string[]): PipelineBuiltinResult {
     };
   }
 
+  let stderr = "";
+
   for (const arg of args) {
     const equalsIndex = arg.indexOf("=");
 
@@ -790,14 +796,17 @@ function runDeclare(args: string[]): PipelineBuiltinResult {
     const variableName = arg.slice(0, equalsIndex);
     const value = arg.slice(equalsIndex + 1);
 
-    if (variableName.length > 0) {
-      shellVariables.set(variableName, value);
+    if (!isValidShellVariableName(variableName)) {
+      stderr += `declare: \`${arg}': not a valid identifier\n`;
+      continue;
     }
+
+    shellVariables.set(variableName, value);
   }
 
   return {
     stdout: "",
-    stderr: "",
+    stderr,
   };
 }
 
