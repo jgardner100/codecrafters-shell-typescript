@@ -45,6 +45,51 @@ type ParsedCommand = {
 let lastTabCompletionLine: string | null = null;
 const backgroundJobs: BackgroundJob[] = [];
 const commandHistory: string[] = [];
+let lastAppendedHistoryIndex = 0;
+
+function readHistoryFile(historyFilePath: string): void {
+  const contents = readFileSync(historyFilePath, "utf8");
+
+  const commands = contents
+    .split(/\r?\n/)
+    .filter((line) => line.length > 0);
+
+  commandHistory.push(...commands);
+}
+
+function loadHistoryFromHistfile(): void {
+  const historyFilePath = process.env.HISTFILE;
+
+  if (!historyFilePath) {
+    return;
+  }
+
+  try {
+    readHistoryFile(historyFilePath);
+    lastAppendedHistoryIndex = commandHistory.length;
+  } catch {
+    // No output. Shell should still start if HISTFILE cannot be read.
+  }
+}
+
+function appendHistoryFile(historyFilePath: string): void {
+  const newHistoryCommands = commandHistory.slice(lastAppendedHistoryIndex);
+
+  if (newHistoryCommands.length === 0) {
+    return;
+  }
+
+  writeFileSync(historyFilePath, `${newHistoryCommands.join("\n")}\n`, {
+    flag: "a",
+  });
+
+  lastAppendedHistoryIndex = commandHistory.length;
+}
+
+function writeHistoryFile(historyFilePath: string): void {
+  writeFileSync(historyFilePath, `${commandHistory.join("\n")}\n`);
+  lastAppendedHistoryIndex = commandHistory.length;
+}
 
 function getExecutableMatches(prefix: string): string[] {
   const matches = new Set<string>();
@@ -1073,6 +1118,8 @@ function promptWithReap(): void {
   rl.prompt();
 }
 
+loadHistoryFromHistfile();
+
 const rl = createInterface({
   input: process.stdin,
   output: process.stdout,
@@ -1182,15 +1229,41 @@ async function handleLine(input: string): Promise<void> {
 
       if (historyFilePath !== undefined) {
         try {
-          const historyFileContents = readFileSync(historyFilePath, "utf8");
-          const historyFileCommands = historyFileContents
-            .split(/\r?\n/)
-            .filter((line) => line.length > 0);
-
-          commandHistory.push(...historyFileCommands);
+          readHistoryFile(historyFilePath);
         } catch {
-          // CodeCrafters tests provide a readable history file. If it cannot be
-          // read, keep the shell running and leave history unchanged.
+          // No output.
+        }
+      }
+
+      createRedirectFile(stdoutTarget);
+      promptWithReap();
+      return;
+    }
+
+    if (args[0] === "-w") {
+      const historyFilePath = args[1];
+
+      if (historyFilePath !== undefined) {
+        try {
+          writeHistoryFile(historyFilePath);
+        } catch {
+          // No output.
+        }
+      }
+
+      createRedirectFile(stdoutTarget);
+      promptWithReap();
+      return;
+    }
+
+    if (args[0] === "-a") {
+      const historyFilePath = args[1];
+
+      if (historyFilePath !== undefined) {
+        try {
+          appendHistoryFile(historyFilePath);
+        } catch {
+          // No output.
         }
       }
 
